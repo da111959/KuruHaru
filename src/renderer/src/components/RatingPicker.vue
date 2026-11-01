@@ -71,12 +71,8 @@ const mode = ref(props.modelValue.mode || "greater");
 const sliderValue = ref(4.5);
 const inputValue = ref(4.5);
 const ratingSliderStyle = computed(() => {
-  const currentValue = Number(sliderValue.value);
-  const safeValue = Number.isFinite(currentValue) ? currentValue : 0;
-  const clamped = Math.min(5, Math.max(0, safeValue));
-  const progress = ((clamped / 5) * 100).toFixed(2);
   return {
-    background: `linear-gradient(90deg, rgba(173,181,113,0.98) 0%, rgba(205,214,141,0.98) ${progress}%, rgba(132,137,118,0.28) ${progress}%, rgba(132,137,118,0.28) 100%)`,
+    background: `var(--ui-action-primary)`,
     "--slider-track-glow": "rgba(173,181,113,0.24)",
     "--slider-thumb-glow": "rgba(173,181,113,0.44)",
   };
@@ -139,7 +135,7 @@ watch(
     rgba(255, 253, 245, 0.08) 8%
   );
   border: 1px solid var(--comp-border);
-  border-radius: 18px;
+  border-radius: var(--ui-radius-md, 10px);
   padding: 18px;
 }
 .picker-header {
@@ -165,19 +161,19 @@ watch(
 .mode-selector label,
 .preset-btn {
   flex: 1;
-  min-height: 40px;
+  min-height: 36px;
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 8px;
-  padding: 10px 12px;
+  padding: 7px 12px;
   background: color-mix(
     in srgb,
     var(--comp-control-bg) 88%,
     rgba(255, 253, 245, 0.08) 8%
   );
   border: 1px solid var(--comp-control-border);
-  border-radius: 14px;
+  border-radius: var(--ui-radius-sm, 6px);
   cursor: pointer;
   color: var(--comp-text);
   transition: all 0.18s ease;
@@ -188,18 +184,13 @@ watch(
 }
 .mode-selector label.active,
 .preset-btn.active {
-  background: linear-gradient(
-    135deg,
-    color-mix(in srgb, var(--comp-accent) 90%, #cbd39c 10%),
-    color-mix(in srgb, var(--comp-accent) 72%, #7f8750 28%)
-  );
-  border-color: color-mix(in srgb, var(--comp-accent) 58%, transparent);
-  color: #fffdf4;
-  box-shadow: 0 12px 22px
-    color-mix(in srgb, var(--comp-accent) 16%, transparent);
+  background: color-mix(in srgb, var(--comp-accent) 12%, var(--comp-control-bg));
+  border-color: var(--comp-accent);
+  color: var(--comp-text);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--comp-accent) 18%, transparent);
 }
 .slider-container {
-  margin-bottom: 18px;
+  margin-bottom: 12px;
 }
 .rating-slider {
   width: 100%;
@@ -207,7 +198,7 @@ watch(
   -webkit-appearance: none;
   appearance: none;
   border: none;
-  border-radius: 999px;
+  border-radius: var(--ui-radius-sm, 6px);
   background-size: 100% 100%;
   box-shadow:
     inset 0 0 0 1px rgba(205, 214, 141, 0.18),
@@ -238,12 +229,7 @@ watch(
   margin-top: -4px;
   border-radius: 50%;
   border: 3px solid rgba(255, 253, 245, 0.94);
-  background: radial-gradient(
-    circle at 35% 35%,
-    #edf2ca 0%,
-    #adb571 58%,
-    #8f985f 100%
-  );
+  background: var(--ui-action-primary);
   box-shadow:
     0 0 0 5px
       color-mix(
@@ -268,7 +254,7 @@ watch(
 .rating-slider::-moz-range-track {
   height: 10px;
   border: none;
-  border-radius: 999px;
+  border-radius: var(--ui-radius-sm, 6px);
   background: transparent;
 }
 .rating-slider::-moz-range-thumb {
@@ -276,12 +262,7 @@ watch(
   height: 18px;
   border-radius: 50%;
   border: 3px solid rgba(255, 253, 245, 0.94);
-  background: radial-gradient(
-    circle at 35% 35%,
-    #edf2ca 0%,
-    #adb571 58%,
-    #8f985f 100%
-  );
+  background: var(--ui-action-primary);
   box-shadow:
     0 0 0 5px
       color-mix(
@@ -313,17 +294,12 @@ watch(
   align-items: center;
   justify-content: center;
   min-width: 58px;
-  min-height: 30px;
+  min-height: 26px;
   padding: 4px 12px;
-  border-radius: 999px;
-  background: linear-gradient(
-    135deg,
-    color-mix(in srgb, var(--comp-accent) 92%, #cbd39c 8%),
-    color-mix(in srgb, var(--comp-accent) 72%, #7f8750 28%)
-  );
-  color: #fffdf4;
-  box-shadow: 0 10px 18px
-    color-mix(in srgb, var(--comp-accent) 16%, transparent);
+  border-radius: var(--ui-radius-sm, 6px);
+  background: color-mix(in srgb, var(--comp-accent) 12%, var(--comp-control-bg));
+  color: var(--comp-text);
+  border: 1px solid color-mix(in srgb, var(--comp-accent) 35%, var(--comp-control-border));
 }
 .input-container {
   display: grid;
@@ -333,10 +309,10 @@ watch(
   margin-bottom: 14px;
 }
 .rating-input {
-  min-height: 42px;
-  padding: 10px 14px;
+  min-height: 38px;
+  padding: 8px 14px;
   border: 1px solid var(--comp-control-border);
-  border-radius: 14px;
+  border-radius: var(--ui-radius-sm, 6px);
   font-size: 16px;
   font-weight: 600;
   text-align: center;
@@ -356,13 +332,18 @@ watch(
   font-weight: 600;
 }
 .clear-btn {
-  width: 100%;
-  min-height: 40px;
-  padding: 10px;
-  background: color-mix(in srgb, #7e4d4d 78%, #221414 22%);
-  border: 1px solid color-mix(in srgb, #c98b8b 42%, transparent);
-  border-radius: 14px;
-  color: #fffdf4;
+  width: auto;
+  min-height: 34px;
+  padding: 7px 12px;
+  background: transparent;
+  border: 1px solid var(--ui-action-danger, #b42318);
+  border-radius: var(--ui-radius-sm, 6px);
+  color: var(--ui-action-danger, #b42318);
   cursor: pointer;
 }
+.clear-btn:hover { background: color-mix(in srgb, var(--ui-action-danger, #b42318) 8%, transparent); }
 </style>
+
+
+
+

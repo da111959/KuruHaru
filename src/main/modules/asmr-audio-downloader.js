@@ -1,11 +1,14 @@
 import fs from "fs";
 import path from "path";
+import crypto from "node:crypto";
 import { ipcMain } from "electron";
-import { getConfig } from "./config.js";
+import { registerIpcHandler } from "../ipc/registry.js";
+import { getConfig, getDataDir } from "./config.js";
 import { getAsmrClient } from "./httpClient.js";
 import { createLogSender } from "../utils/logger.js";
 import { normalizeError } from "../utils/errorHandler.js";
 import { withRetry } from "../utils/retry.js";
+import { CONFIG_DEFAULTS } from "../../shared/config-contract.mjs";
 import {
   DEFAULT_FILTER_VIDEO_FORMATS,
   DEFAULT_MAX_AUTO_DOWNLOAD_TASKS_PER_WORK,
@@ -13,7 +16,16 @@ import {
   parseAudioNodes,
   parseBatchDownloadInput,
   shouldManualReviewByTaskCount,
+  generateFingerprint,
 } from "./asmr-core/audio-download-utils.js";
+import {
+  createDownloadManifestTaskId,
+  mergeDownloadManifestTasks,
+  mergeDownloadManifestWork,
+  readDownloadManifest,
+  resolveDownloadTaskAction,
+  writeDownloadManifest,
+} from "./asmr-core/download-manifest-store.js";
 
 const logger = createLogSender("asmr-audio-downloader");
 
@@ -21,7 +33,8 @@ const CHANNEL_NAME = "asmr-audio-downloader-run";
 const API_BASE_URL = "https://api.asmr-200.com/api/tracks/";
 const ARIA2_INPUT_FILE = "aria2_tasks.txt";
 const MANUAL_REVIEW_FILE = "manual_review.txt";
-const DEFAULT_ARIA2_RPC_URL = "http://localhost:6800/jsonrpc";
+const DOWNLOAD_MANIFEST_FILE = "asmr_download_manifest.json";
+const DEFAULT_ARIA2_RPC_URL = CONFIG_DEFAULTS.asmr.downloadRpcUrl;
 const DEFAULT_ARIA2_SPLIT = "16";
 const DEFAULT_ARIA2_MAX_CONNECTIONS = "16";
 const API_REQUEST_DELAY_MS = 500;
@@ -32,6 +45,11 @@ const NETWORK_RETRY_BACKOFF_MS = 1000;
 const MAX_PATH_LIMIT = 250;
 const DEFAULT_USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36";
+
+// Keep one in-flight promise per logical request and serialize manifest mutations.
+// This protects double-clicks while still allowing a later, different request to run.
+const activeDownloadOperations = new Map();
+let downloadRunTail = Promise.resolve();
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -313,6 +331,8 @@ async function pushTasksToAria2({ tasks, downloadDir, rpcUrl, rpcSecret }) {
   let pushedCount = 0;
   const pushErrors = [];
   const pushedTasks = [];
+  const taskStates = new Map();
+  let inventoryAvailable = true;
   let existingTasksByOutputPath = new Map();
 
   try {
@@ -322,31 +342,23 @@ async function pushTasksToAria2({ tasks, downloadDir, rpcUrl, rpcSecret }) {
       rpcSecret,
     );
   } catch (error) {
+    inventoryAvailable = false;
     logger.warn(
-      `[aria2] 读取已有任务失败，将继续逐项提交: ${normalizeError(error).message}`,
+      `[aria2] 读取已有任务失败，本批次不提交以避免重复下载: ${normalizeError(error).message}`,
     );
+    for (const task of tasks) {
+      const message = `无法确认 Aria2 现有任务状态，已阻止自动重提: ${normalizeError(error).message}`;
+      pushErrors.push({ outPath: task.outPath, message });
+      taskStates.set(task.outPath, { status: "uncertain", error: message });
+    }
   }
 
-  for (const task of tasks) {
+  for (const task of inventoryAvailable ? tasks : []) {
     const outputPath = getTaskOutputPath(downloadDir, task);
     const tempPath = `${outputPath}.aria2`;
     const existingTask = existingTasksByOutputPath.get(
       normalizeOutputPath(outputPath),
     );
-
-    if (
-      existingTask &&
-      ["active", "waiting", "paused"].includes(String(existingTask.status))
-    ) {
-      pushedTasks.push({
-        outPath: task.outPath,
-        gid: existingTask.gid,
-      });
-      logger.info(
-        `[aria2] 已存在下载任务，复用 gid: ${task.outPath} -> ${existingTask.gid}`,
-      );
-      continue;
-    }
 
     const outputExists = await fs.promises
       .stat(outputPath)
@@ -356,11 +368,34 @@ async function pushTasksToAria2({ tasks, downloadDir, rpcUrl, rpcSecret }) {
       .access(tempPath, fs.constants.F_OK)
       .then(() => true)
       .catch(() => false);
-    if (outputExists && !tempExists) {
+    const action = resolveDownloadTaskAction({
+      existingStatus: existingTask?.status,
+      outputExists,
+      tempExists,
+    });
+
+    if (action === "reuse") {
       pushedTasks.push({
         outPath: task.outPath,
-        gid: `local:${normalizeOutputPath(task.outPath)}`,
+        gid: existingTask.gid,
+        status: "active",
       });
+      taskStates.set(task.outPath, { status: "active", gid: existingTask.gid });
+      logger.info(
+        `[aria2] 已存在下载任务，复用 gid: ${task.outPath} -> ${existingTask.gid}`,
+      );
+      continue;
+    }
+
+    if (action === "completed") {
+      const completedGid =
+        existingTask?.gid || `local:${normalizeOutputPath(task.outPath)}`;
+      pushedTasks.push({
+        outPath: task.outPath,
+        gid: completedGid,
+        status: "completed",
+      });
+      taskStates.set(task.outPath, { status: "completed", gid: completedGid });
       logger.info(`[aria2] 本地文件已完整，跳过重复提交: ${task.outPath}`);
       continue;
     }
@@ -405,6 +440,11 @@ async function pushTasksToAria2({ tasks, downloadDir, rpcUrl, rpcSecret }) {
         pushedTasks.push({
           outPath: task.outPath,
           gid: response.data.result,
+          status: "submitted",
+        });
+        taskStates.set(task.outPath, {
+          status: "submitted",
+          gid: response.data.result,
         });
         existingTasksByOutputPath.set(normalizeOutputPath(outputPath), {
           gid: response.data.result,
@@ -419,11 +459,16 @@ async function pushTasksToAria2({ tasks, downloadDir, rpcUrl, rpcSecret }) {
         outPath: task.outPath,
         message: errorMessage,
       });
+      taskStates.set(task.outPath, { status: "failed", error: errorMessage });
     } catch (error) {
       const normalizedError = normalizeError(error);
       pushErrors.push({
         outPath: task.outPath,
         message: normalizedError.message,
+      });
+      taskStates.set(task.outPath, {
+        status: "uncertain",
+        error: normalizedError.message,
       });
       logger.error(
         `[aria2] 推送失败: ${task.outPath} -> ${normalizedError.message}`,
@@ -436,14 +481,17 @@ async function pushTasksToAria2({ tasks, downloadDir, rpcUrl, rpcSecret }) {
     pushedCount,
     pushErrors,
     pushedTasks,
+    taskStates,
   };
 }
 
-export async function runAsmrAudioDownloader(payload = {}) {
+async function runAsmrAudioDownloaderInternal(payload = {}) {
   const options = resolveRuntimeOptions(payload);
+  const operationId = String(payload.operationId || crypto.randomUUID());
   if (!options.inputText.trim()) {
     return {
       success: false,
+      operationId,
       message: "请输入 RJ/VJ/BJ 编号列表",
     };
   }
@@ -451,6 +499,7 @@ export async function runAsmrAudioDownloader(payload = {}) {
   if (!options.downloadDir) {
     return {
       success: false,
+      operationId,
       message: "请选择下载目录",
     };
   }
@@ -463,7 +512,18 @@ export async function runAsmrAudioDownloader(payload = {}) {
   );
   const processedItems = [];
   const allTasks = [];
-
+  const runId = operationId;
+  const manifestPath = path.join(getDataDir(), DOWNLOAD_MANIFEST_FILE);
+  let manifest;
+  try {
+    manifest = readDownloadManifest(manifestPath);
+  } catch (error) {
+    return {
+      success: false,
+      operationId,
+      message: `音声下载任务 manifest 读取失败: ${error.message}`,
+    };
+  }
   logger.info(
     `[run] 开始处理 ${workItems.length} 个有效编号，下载目录: ${options.downloadDir}，视频过滤: ${
       options.filterVideoFormats ? "on" : "off"
@@ -561,6 +621,78 @@ export async function runAsmrAudioDownloader(payload = {}) {
   }
 
   try {
+    const plannedTasks = allTasks.map((task) => {
+      const workCode = task.outPath.split(/[\\/]/)[0].toUpperCase();
+      const fingerprint = generateFingerprint(
+        path.posix.basename(task.outPath.replace(/\\/g, "/")),
+      );
+      const taskId = createDownloadManifestTaskId(
+        workCode,
+        fingerprint,
+        task.outPath,
+      );
+      const previousTask = manifest.tasks.find(
+        (item) => item.taskId === taskId,
+      );
+      return {
+        ...task,
+        taskId,
+        runId,
+        workCode,
+        fingerprint,
+        absoluteOutputPath: getTaskOutputPath(options.downloadDir, task),
+        state: ["completed", "active", "submitted", "uncertain"].includes(
+          previousTask?.state,
+        )
+          ? previousTask.state
+          : options.testMode || !options.useAria2
+            ? "previewed"
+            : "planned",
+        aria2Gid: previousTask?.aria2Gid || null,
+        manualReviewReason: null,
+        keepReason:
+          "保留规则：每个轨道指纹按现有 SE/声道/格式/码率优先级选出该输出轨道",
+        createdAt: previousTask?.createdAt || new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+    });
+    allTasks.splice(0, allTasks.length, ...plannedTasks);
+
+    manifest = mergeDownloadManifestTasks(manifest, plannedTasks);
+    for (const item of invalidItems) {
+      manifest = mergeDownloadManifestWork(manifest, {
+        runId,
+        workCode: "",
+        rawInput: item.input,
+        state: "manual-review",
+        plannedTaskCount: 0,
+        manualReviewReason: item.reason,
+        updatedAt: new Date().toISOString(),
+      });
+    }
+    for (const item of processedItems) {
+      const matchingWork = workItems.find(
+        (work) => work.displayCode === item.workCode,
+      );
+      const workCode = String(item.workCode || "").toUpperCase();
+      const reason = item.reason || null;
+      manifest = mergeDownloadManifestWork(manifest, {
+        runId,
+        workCode,
+        rawInput: matchingWork?.rawInput || item.input,
+        state:
+          item.status === "manual"
+            ? "manual-review"
+            : options.testMode || !options.useAria2
+              ? "previewed"
+              : "planned",
+        plannedTaskCount: item.taskCount || 0,
+        manualReviewReason: reason,
+        updatedAt: new Date().toISOString(),
+      });
+    }
+    manifest = writeDownloadManifest(manifestPath, manifest);
+
     const backupFiles = await writeBackupFiles({
       downloadDir: options.downloadDir,
       manualItems,
@@ -582,8 +714,51 @@ export async function runAsmrAudioDownloader(payload = {}) {
       });
     }
 
+    const pushStateByOutPath = aria2PushResult.taskStates || new Map();
+    const pushedTaskByOutPath = new Map(
+      aria2PushResult.pushedTasks.map((task) => [task.outPath, task]),
+    );
+    const finalTasks = allTasks.map((task) => {
+      const pushState = pushStateByOutPath.get(task.outPath);
+      const pushedTask = pushedTaskByOutPath.get(task.outPath);
+      return {
+        ...task,
+        state: pushState?.status || task.state,
+        aria2Gid: pushedTask?.gid || pushState?.gid || task.aria2Gid,
+        manualReviewReason: pushState?.error || null,
+        updatedAt: new Date().toISOString(),
+      };
+    });
+    manifest = mergeDownloadManifestTasks(manifest, finalTasks);
+    for (const item of processedItems) {
+      const workTasks = finalTasks.filter(
+        (task) => task.workCode === String(item.workCode || "").toUpperCase(),
+      );
+      if (!workTasks.length) continue;
+      const hasFailure = workTasks.some((task) =>
+        ["failed", "uncertain"].includes(task.state),
+      );
+      manifest = mergeDownloadManifestWork(manifest, {
+        runId,
+        workCode: String(item.workCode || "").toUpperCase(),
+        rawInput: item.input,
+        state: hasFailure
+          ? "retryable"
+          : options.testMode || !options.useAria2
+            ? "previewed"
+            : "submitted",
+        plannedTaskCount: workTasks.length,
+        submittedTaskCount: workTasks.filter((task) =>
+          ["submitted", "active", "completed"].includes(task.state),
+        ).length,
+        manualReviewReason: null,
+      });
+    }
+    manifest = writeDownloadManifest(manifestPath, manifest);
+
     return {
       success: true,
+      operationId,
       message: "音声下载任务处理完成",
       summary: {
         inputCount: workItems.length + invalidItems.length,
@@ -600,16 +775,18 @@ export async function runAsmrAudioDownloader(payload = {}) {
         downloadDir: options.downloadDir,
         manualReviewPath: backupFiles.manualReviewPath,
         aria2InputPath: backupFiles.aria2InputPath,
+        manifestPath,
       },
       manualItems,
       processedItems,
       pushErrors: aria2PushResult.pushErrors,
-      taskManifest: allTasks.map((task) => ({
+      taskManifest: finalTasks.map((task) => ({
+        taskId: task.taskId,
+        fingerprint: task.fingerprint,
         outPath: task.outPath,
-        workCode: task.outPath.split("/")[0],
-        gid: aria2PushResult.pushedTasks.find(
-          (item) => item.outPath === task.outPath,
-        )?.gid,
+        workCode: task.workCode,
+        state: task.state,
+        gid: task.aria2Gid,
       })),
       taskPreview: allTasks.slice(0, 50).map((task) => task.outPath),
     };
@@ -618,10 +795,59 @@ export async function runAsmrAudioDownloader(payload = {}) {
     logger.error(`[run] 处理失败: ${normalizedError.message}`);
     return {
       success: false,
+      operationId,
       message: normalizedError.message,
       details: normalizedError.details,
     };
   }
+}
+
+function createDownloadOperationKey(payload = {}) {
+  const normalized = {
+    inputText: String(payload.inputText || "").trim(),
+    downloadDir: String(payload.downloadDir || "")
+      .trim()
+      .replace(/\\/g, "/")
+      .toLowerCase(),
+    rpcUrl: String(payload.rpcUrl || "").trim(),
+    useAria2: payload.useAria2,
+    testMode: payload.testMode,
+    filterVideoFormats: payload.filterVideoFormats,
+    maxAutoTasksPerWork: payload.maxAutoTasksPerWork,
+    requestedOutPathsByCode: payload.requestedOutPathsByCode || null,
+  };
+  return crypto
+    .createHash("sha256")
+    .update(JSON.stringify(normalized))
+    .digest("hex");
+}
+
+export function runAsmrAudioDownloader(payload = {}) {
+  const operationKey = createDownloadOperationKey(payload);
+  const existing = activeDownloadOperations.get(operationKey);
+  if (existing) return existing;
+
+  const operationId = String(payload.operationId || crypto.randomUUID());
+  const operationPayload = { ...payload, operationId };
+  const operation = downloadRunTail
+    .catch(() => undefined)
+    .then(() => runAsmrAudioDownloaderInternal(operationPayload));
+  // Keep the queue alive after a rejection without changing the caller's result.
+  downloadRunTail = operation.catch(() => undefined);
+  activeDownloadOperations.set(operationKey, operation);
+  operation.then(
+    () => {
+      if (activeDownloadOperations.get(operationKey) === operation) {
+        activeDownloadOperations.delete(operationKey);
+      }
+    },
+    () => {
+      if (activeDownloadOperations.get(operationKey) === operation) {
+        activeDownloadOperations.delete(operationKey);
+      }
+    },
+  );
+  return operation;
 }
 
 export function setupAsmrAudioDownloaderIPC() {
@@ -631,7 +857,7 @@ export function setupAsmrAudioDownloaderIPC() {
     // ignore duplicate registration cleanup
   }
 
-  ipcMain.handle(CHANNEL_NAME, (_event, payload = {}) =>
+  registerIpcHandler(CHANNEL_NAME, (_event, payload = {}) =>
     runAsmrAudioDownloader(payload),
   );
 }

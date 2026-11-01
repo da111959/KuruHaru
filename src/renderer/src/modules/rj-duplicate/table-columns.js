@@ -123,6 +123,30 @@ export const createRjDuplicateColumns = () => {
       },
     },
     {
+      title: "关联时间差",
+      key: "timeDifferenceMs",
+      width: 120,
+      render(row) {
+        return row.timeDifferenceMs === null || row.timeDifferenceMs === undefined
+          ? "无 Bot 回复"
+          : `${(row.timeDifferenceMs / 1000).toFixed(1)} 秒`;
+      },
+    },
+    {
+      title: "来源与保留理由",
+      key: "keepReason",
+      width: 300,
+      render(row) {
+        const sources = [row.source?.userChatId, row.source?.botChatId]
+          .filter(Boolean)
+          .join(" / ");
+        return h("div", null, [
+          h("div", { style: { fontSize: "12px", color: "#666" } }, sources || "来源未知"),
+          h("div", { style: { fontSize: "12px", color: "#444", whiteSpace: "normal" } }, row.keepReason || "未提供理由"),
+        ]);
+      },
+    },
+    {
       title: "状态",
       key: "keepStatus",
       width: 100,

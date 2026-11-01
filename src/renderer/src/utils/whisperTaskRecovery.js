@@ -53,7 +53,9 @@ export const classifyWhisperTaskResult = (taskResult = {}) => {
     : parseExitCodeFromErrorText(errorText);
   const isUserStop =
     reason === "user-stop" || USER_STOP_PATTERN.test(errorText);
-  const isError = Boolean(errorText) || taskResult?.success === false;
+  const isValidationFailure = reason === "validation-failed";
+  const isError =
+    Boolean(errorText) || taskResult?.success === false || isValidationFailure;
   const isNonRecoverable =
     isError &&
     NON_RECOVERABLE_WHISPER_ERROR_PATTERNS.some((pattern) =>
@@ -62,6 +64,7 @@ export const classifyWhisperTaskResult = (taskResult = {}) => {
   const isRecoverable =
     isError &&
     !isUserStop &&
+    !isValidationFailure &&
     !isNonRecoverable &&
     (RECOVERABLE_WHISPER_EXIT_CODES.has(exitCode) ||
       RECOVERABLE_WHISPER_ERROR_PATTERNS.some((pattern) =>
@@ -72,6 +75,7 @@ export const classifyWhisperTaskResult = (taskResult = {}) => {
     errorText,
     exitCode,
     isError,
+    isValidationFailure,
     isNonRecoverable,
     isUserStop,
     isRecoverable,

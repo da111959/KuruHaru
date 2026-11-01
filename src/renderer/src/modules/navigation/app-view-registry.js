@@ -1,39 +1,27 @@
+import { defineAsyncComponent } from "vue";
 import HomePanel from "../../components/HomePanel.vue";
 import AsmrDownloader from "../../components/AsmrDownloader.vue";
 import WhisperTool from "../../components/WhisperTool.vue";
 import TranslationAutomation from "../../components/TranslationAutomation.vue";
-import LocalCleaner from "../../components/LocalCleaner.vue";
-import CloudCleaner from "../../components/CloudCleaner.vue";
-import UploadTool from "../../components/UploadTool.vue";
-import Settings from "../../components/Settings.vue";
-import RecentActivity from "../../components/RecentActivity.vue";
-import TgSearchBot from "../../components/TgSearchBot.vue";
-import TgInfoCache from "../../components/TgInfoCache.vue";
-import TgInfoErrorRecover from "../../components/TgInfoErrorRecover.vue";
-import RjDuplicateDetector from "../../components/RjDuplicateDetector.vue";
-import Tools from "../../components/Tools.vue";
-import ChineseList from "../../components/ChineseList.vue";
-import AdvancedSearch from "../../components/AdvancedSearch.vue";
-import RjFilter from "../../components/RjFilter.vue";
 import { createViewRegistry, resolveActiveViewComponent } from "./viewRegistry";
 
 const appViewRegistry = createViewRegistry({
   HomePanel,
-  UploadTool,
+  UploadTool: defineAsyncComponent(() => import("../../components/UploadTool.vue")),
   WhisperTool,
   TranslationAutomation,
   AsmrDownloader,
-  CloudCleaner,
-  RecentActivity,
-  TgSearchBot,
-  TgInfoCache,
-  TgInfoErrorRecover,
-  RjDuplicateDetector,
-  Tools,
-  Settings,
-  ChineseList,
-  AdvancedSearch,
-  RjFilter,
+  CloudCleaner: defineAsyncComponent(() => import("../../components/CloudCleaner.vue")),
+  RecentActivity: defineAsyncComponent(() => import("../../components/RecentActivity.vue")),
+  TgSearchBot: defineAsyncComponent(() => import("../../components/TgSearchBot.vue")),
+  TgInfoCache: defineAsyncComponent(() => import("../../components/TgInfoCache.vue")),
+  TgInfoErrorRecover: defineAsyncComponent(() => import("../../components/TgInfoErrorRecover.vue")),
+  RjDuplicateDetector: defineAsyncComponent(() => import("../../components/RjDuplicateDetector.vue")),
+  Tools: defineAsyncComponent(() => import("../../components/Tools.vue")),
+  Settings: defineAsyncComponent(() => import("../../components/Settings.vue")),
+  ChineseList: defineAsyncComponent(() => import("../../components/ChineseList.vue")),
+  AdvancedSearch: defineAsyncComponent(() => import("../../components/AdvancedSearch.vue")),
+  RjFilter: defineAsyncComponent(() => import("../../components/RjFilter.vue")),
 });
 
 export const resolveAppActiveComponent = (currentView) =>
@@ -41,6 +29,6 @@ export const resolveAppActiveComponent = (currentView) =>
     currentView,
     registry: appViewRegistry,
     fallback: HomePanel,
-    localCleaner: LocalCleaner,
-    cloudCleaner: CloudCleaner,
+    localCleaner: defineAsyncComponent(() => import("../../components/LocalCleaner.vue")),
+    cloudCleaner: defineAsyncComponent(() => import("../../components/CloudCleaner.vue")),
   });

@@ -84,6 +84,15 @@ vi.mock("./config", () => ({
 vi.mock("./httpClient", () => ({
   getAsmrClient: () => asmrClientMock,
 }));
+vi.mock("./translation-automation", () => ({
+  enqueueRunningTranslationWork: vi.fn(),
+  getTranslationAutomationStatus: vi.fn(() => ({})),
+}));
+vi.mock("./tg-daily-zip", () => ({
+  generateDailyZip: vi.fn(),
+  getLatestDailyZip: vi.fn(),
+  prefetchDailyZipSources: vi.fn(),
+}));
 vi.mock("./tg-info-cache", () => ({
   fetchWorkInfoByCode: vi.fn(),
   formatWorkInfoMessage: vi.fn(),
@@ -93,6 +102,7 @@ vi.mock("./tg-info-cache", () => ({
 import {
   formatTranslationAutomationStatus,
   handleSearchRequest,
+  getBotStatus,
 } from "./tg-search-bot";
 
 describe("tg-search-bot status message", () => {
@@ -223,6 +233,16 @@ describe("tg-search-bot queue fallback", () => {
 
     expect(result.success).toBe(true);
     expect(result.source).toBe("one_queue");
+    expect(result.status).toBe("queued");
+    expect(result.stage).toBe("queue");
+    expect(result.workCode).toBe("RJ01560861");
+    expect(result.pipeline).toEqual([
+      { stage: "history", status: "miss" },
+      { stage: "preset", status: "miss" },
+      { stage: "channel", status: "skip" },
+      { stage: "one", status: "hit" },
+      { stage: "queue", status: "hit" },
+    ]);
     expect(result.message).toContain("已转入待翻译队列");
     expect(result.url).toBe("https://asmr.one/playlist?id=playlist-1");
 
@@ -258,6 +278,37 @@ describe("tg-search-bot queue fallback", () => {
         expect.stringContaining("stage=One status=hit_no_subtitle"),
         expect.stringContaining("stage=入队 status=queued"),
       ]),
+    );
+  });
+
+  it("marks One results without subtitle as a pipeline hit when queued", async () => {
+    asmrClientMock.get.mockImplementation(async (url) => {
+      if (String(url).includes("/api/search/")) {
+        return {
+          status: 200,
+          data: {
+            works: [
+              {
+                id: "90001",
+                source_id: "RJ01560861",
+                other_language_editions_in_db: [],
+                tags: [],
+                has_subtitle: false,
+              },
+            ],
+          },
+        };
+      }
+      throw new Error(`Unexpected GET ${url}`);
+    });
+    asmrClientMock.post.mockResolvedValue({ status: 200, data: "ok" });
+
+    const result = await handleSearchRequest("RJ01560861", {
+      enableOneQueue: true,
+    });
+
+    expect(result.pipeline.find((stage) => stage.stage === "one").status).toBe(
+      "hit",
     );
   });
 
@@ -474,6 +525,9 @@ describe("tg-search-bot queue fallback", () => {
 
     expect(result.success).toBe(false);
     expect(result.retryable).toBe(true);
+    expect(result.status).toBe("fail");
+    expect(result.failureCode).toBe("transient_upstream_failure");
+    expect(result.failureStage).toBe("one");
     expect(result.message).toContain("One站检索暂时失败");
   });
 
@@ -489,6 +543,50 @@ describe("tg-search-bot queue fallback", () => {
 
     expect(result.success).toBe(false);
     expect(result.retryable).not.toBe(true);
+    expect(result.status).toBe("miss");
+    expect(result.failureCode).toBe("not_found");
     expect(result.message).toContain("One站未找到 RJ00154351");
+  });
+
+  it("reports index freshness and structured local misses", async () => {
+    configState.current.tg.botHistoryPath =
+      "C:\\test-data\\tg-bot-history-stale.json";
+    fsMock.readFile.mockImplementation(async (filePath) => {
+      if (String(filePath).endsWith("tg-bot-history-stale.json")) {
+        return JSON.stringify({
+          updatedAt: "2020-01-01T00:00:00.000Z",
+          history: { RJ00000001: { url: "https://t.me/search_test/1" } },
+        });
+      }
+      const error = new Error("ENOENT");
+      error.code = "ENOENT";
+      throw error;
+    });
+
+    const result = await handleSearchRequest("RJ01560870");
+    const status = getBotStatus();
+
+    expect(result.status).toBe("miss");
+    expect(result.failureCode).toBeNull();
+    expect(result.freshness).toBe("stale");
+    expect(result.indexAgeMs).toBeGreaterThan(0);
+    expect(result.pipeline).toEqual([
+      { stage: "history", status: "miss" },
+      { stage: "preset", status: "miss" },
+      { stage: "channel", status: "skip" },
+      { stage: "one", status: "skip" },
+      { stage: "queue", status: "skip" },
+    ]);
+    expect(status.indexedCount).toBe(1);
+    expect(status.freshness).toBe("stale");
+  });
+
+  it("keeps index freshness unknown when the index has never been populated", async () => {
+    configState.current.tg.botHistoryPath =
+      "C:\\test-data\\tg-bot-history-empty.json";
+    const result = await handleSearchRequest("RJ01560871");
+
+    expect(result.freshness).toBe("unknown");
+    expect(result.indexUpdatedAt).toBeNull();
   });
 });

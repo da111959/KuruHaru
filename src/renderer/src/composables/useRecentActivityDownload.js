@@ -1,7 +1,11 @@
 import { ref } from "vue";
 import { tgDownloadFiles } from "../api/tgApi";
 
-export const useRecentActivityDownload = ({ selectedFiles }) => {
+export const useRecentActivityDownload = ({ selectedFiles, message }) => {
+  const notify = (type, content) => {
+    if (message?.[type]) return message[type](content);
+    console.warn(`[recent-activity] ${type}: ${content}`);
+  };
   const isDownloading = ref(false);
   const isCancelled = ref(false);
   const downloadedCount = ref(0);
@@ -143,13 +147,13 @@ export const useRecentActivityDownload = ({ selectedFiles }) => {
         const failMsg = failedFiles.value
           .map((f) => `${f.name}: ${f.error}`)
           .join("\n");
-        alert(`${message}\n\n${failMsg}`);
+        notify("warning", `${message}\n\n${failMsg}`);
       } else {
-        alert(message);
+        notify("success", message);
       }
     } catch (e) {
       if (isSessionActive(sessionId)) {
-        alert(`下载失败: ${e.message}`);
+        notify("error", `下载失败: ${e.message}`);
       }
     } finally {
       if (isSessionActive(sessionId)) {

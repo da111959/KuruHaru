@@ -1,169 +1,91 @@
-# ARCHITECTURE.md — KuruHaru 项目架构
+# 系统架构与模块边界
 
-> 状态: 🔄 持续更新  
-> 最后更新: 2026-08-01
+> 状态：`current`
+> 校验日期：2026-11-01
 
-> 单智能体快速入口：`docs/README.md`
-
-## 1. 系统总览
-
-KuruHaru 是 Electron 桌面应用，采用 `Renderer -> Preload -> Main` 三段式架构。
+## 运行边界
 
 ```text
-Renderer (Vue 3 + Pinia + Naive UI)
-  └─ window.api.*
-      └─ Preload (contextBridge)
-          └─ ipcRenderer.invoke/send
-              └─ Main Process (ipcMain.handle/on)
-                  ├─ src/main/modules/*
-                  └─ src/main/utils/*
+Vue 页面 / composables / stores
+        -> Renderer API adapters
+        -> Preload capability allowlist
+        -> Main IPC handler (registry where adopted) / request validation
+        -> Domain services / repositories / external adapters
+        -> 用户数据、文件、Telegram、ASMR.ONE、Aria2、Whisper
 ```
 
----
+- `src/main/index.js` 负责 Electron 生命周期，并调用组合根。
+- `src/main/bootstrap/module-assembly.js` 负责领域服务、IPC 和后台任务的启动/停止顺序。
+- `src/main/system/` 负责窗口、对话框和授权文件能力。
+- `src/main/ipc/registry.js` 负责受信发送方校验和统一错误包装。
+- `src/main/domains/` 正在提供领域服务、仓储和 IPC 适配边界；部分服务仍委托现有 `src/main/modules/` 实现，并未完成完整的领域拆分。
+- `src/preload/index.js` 是 Renderer 的唯一宿主能力入口；Renderer 不直接访问 Node.js。
 
-## 2. 分层与职责
+## 模块归属
 
-| 层级         | 目录                   | 职责                                    |
-| ------------ | ---------------------- | --------------------------------------- |
-| Renderer     | `src/renderer/src/`    | UI 展示、状态管理、用户交互             |
-| Preload      | `src/preload/index.js` | 将安全 API 暴露给 `window.api`          |
-| Main Runtime | `src/main/index.js`    | 窗口生命周期、托盘、IPC 装配            |
-| Workflow Runtime | `src/main/workflow-runtime/` | 工作流定义校验、节点调度、运行态管理 |
-| Modules      | `src/main/modules/`    | 业务逻辑（ASMR/TG/Whisper/配置）        |
-| Utils        | `src/main/utils/`      | 通用工具（日志、错误、重试、TG 登录等） |
+| 能力 | 组合/入口 | 主要实现 |
+| --- | --- | --- |
+| 窗口、托盘、文件能力 | `src/main/system/` | 系统服务 |
+| ASMR | `src/main/domains/asmr/` | 服务、凭据、仓储、IPC 适配 |
+| Telegram 搜索 | `src/main/domains/telegram-search/` | 搜索服务和适配器，连接现有搜索模块 |
+| TG 信息缓存 | `src/main/domains/tg-info-cache/` | 缓存服务、仓储、调度器和适配器 |
+| 自动翻译 | `src/main/domains/translation-automation/` | 编排器、状态仓储、调度器和适配器 |
+| Whisper | `src/main/modules/whisper.js` | 转写、任务事件和字幕打包 |
+| Telegram 登录/上传 | `src/main/utils/telegram-login.js` | 客户端、认证、上传和操作状态；User API 客户端由 `requireConnectedTelegramClient()` 统一复用 |
+| 重复检测 | `src/main/modules/tg-rj-duplicates.js` | 扫描、预览、执行和审计 |
+| 音声下载 | `src/main/modules/asmr-audio-downloader.js` | 规划、manifest 和 Aria2 提交 |
 
-关键约束：
+## IPC 约束
 
-- Renderer 不直接访问 Node.js/文件系统。
-- Renderer 通过 `window.api` 调用主进程能力。
-- 主进程能力通过 IPC 通道暴露。
-- 主窗口启用 `contextIsolation: true` 与 `nodeIntegration: false`；Node.js 能力只能通过 preload 白名单 API 使用。
-- 主窗口启动前完成 IPC 装配，避免首屏请求在 handler 注册前到达。
-- 新窗口请求仅允许以系统浏览器打开 `http:`/`https:` 外链，主窗口内导航会被阻止。
-- 长时运行的翻译任务只向 UI 推送合并后的 Whisper 原始输出；日志文件串行写入并在单文件达到 `10 MiB` 时滚动，避免 I/O 或 IPC 洪泛导致窗口失去响应。
-- Windows 系统毛玻璃以原生窗口材质为唯一模糊层；渲染层仅保留静态渐变，避免透明无边框窗口叠加多个 CSS `backdrop-filter` 后出现合成器卡顿。
+- 每个频道只有一个 owner；变更同时更新 Main、Preload、Renderer adapter、测试和本文档。
+- 长任务必须返回 operation/task id，并提供独立的事件解绑函数。
+- 所有 User API 读取/写入域必须复用 `telegram-login` 的单例客户端，不得使用同一 StringSession 创建并行 `TelegramClient`。
+- 发送方校验、输入校验、错误码和敏感字段脱敏必须在 Main 边界完成。
+- 频道名、外部链接、搜索顺序、上传成功语义和删除规则不是内部实现细节，未经批准不得改变。
+- 当前仍有旧模块直接调用 `ipcMain.handle/on`；这是后续 P1 收敛项，不在本轮伪装成已完成。
 
----
+## 主进程日志与窗口生命周期
 
-## 3. 主进程模块现状（代码实况）
+- Main 的 `console.log/info/warn/error/debug` 通过 `src/main/utils/logger.js` 异步写入文件，不直接写 inherited stdout/stderr，避免宿主终端暂停时阻塞 Electron 主线程。
+- 日志文件写入失败不会回退到控制台；敏感字段在序列化前脱敏。
+- 托盘动作只对未销毁的 BrowserWindow 执行；窗口 `closed` 后清空主窗口引用。
 
-### 3.1 `src/main/modules/`（12 个文件）
+### Whisper 进程收尾
 
-| 文件                      | 作用                                           |
-| ------------------------- | ---------------------------------------------- |
-| `asmr-audio-downloader.js` | ASMR 音声下载任务、过滤去重与 Aria2 推送       |
-| `asmr-localization.js`    | ASMR 数据抓取、云端/本地清理、中文列表相关 IPC |
-| `asmr-login.js`           | ASMR 登录相关 IPC                              |
-| `asmr.js`                 | ASMR 功能旧实现/兼容实现                       |
-| `config.js`               | 配置读取与保存                                 |
-| `httpClient.js`           | 统一 HTTP 客户端                               |
-| `tg-bot-api.js`           | TG Bot API 适配                                |
-| `tg-recent-activity.js`   | 最近活动扫描、下载、缓存读取                   |
-| `tg-rj-duplicates.js`     | RJ 重复消息扫描与删除                          |
-| `tg-rj-duplicates-old.js` | 旧版重复检测实现                               |
-| `tg-search-bot.js`        | TG 搜索 Bot 与索引同步                         |
-| `whisper.js`              | Whisper 转写与字幕打包                         |
+- `src/main/modules/whisper.js` 直接启动 Whisper 可执行文件，不再通过 `cmd /c` 包装进程，避免包装进程和引擎进程出现不同的退出生命周期。
+- 转写期间 Main 进程同时观察引擎输出和目标目录；连续两次轮询确认字幕与音频完整匹配后，结束仍存活的引擎进程并发布一次成功事件。
+- 连续 `10` 分钟没有日志或字幕目录变化时，Main 终止进程树并将任务标记为 watchdog 失败，避免 Renderer 永久保持忙碌。
+- 用户取消先落盘 `cancelled` 状态和 `user-stop` 事件，再终止子进程；随后到达的 `close`/`error` 事件不会覆盖取消结果。
+- Main 会识别外部引擎输出的“VAD 注入已停用”日志，并给引擎 15 秒收尾宽限期；宽限期后仍未退出时由 Main 负责终止，因此不依赖重新构建外部 Python 包。外部包中的 ONNX 显式释放改动仍可作为后续优化，但不会替代 Main 侧兜底。
 
-### 3.2 `src/main/utils/`（关键文件）
+## 状态与持久化
 
-| 文件                      | 作用                        |
-| ------------------------- | --------------------------- |
-| `telegram-login.js`       | Telegram 登录与上传流程 IPC |
-| `logger.js`               | 统一日志发送器              |
-| `errorHandler.js`         | 错误标准化                  |
-| `retry.js`                | 通用重试工具                |
-| `asmr-data-transforms.js` | ASMR 数据结构转换           |
+| 状态 | 默认位置 | 用途 |
+| --- | --- | --- |
+| 下载 manifest | `paths.dataDir/asmr_download_manifest.json` | 任务身份、路径、GID、状态和人工复核 |
+| Whisper 任务 | `<userData>/data/whisper-task-state.json` | 阶段、时长、中断和失败原因 |
+| 上传状态 | `paths.uploadHistoryDir/upload_state.json` | confirmed/uncertain 幂等状态 |
+| 自动翻译 | `paths.dataDir/translation-automation-state.json` | 队列阶段、外部引用和恢复信息 |
+| 重复审计 | `paths.dataDir/rj-duplicate-audit.json` | 快照、预览和逐项结果 |
+| TG 信息缓存 | 应用数据目录 | 来源、新鲜度和刷新失败 |
 
----
+## 配置边界与精简策略
 
-## 4. IPC 通信模式（实际实现）
+- `src/shared/config-contract.mjs` 是配置 section、默认值和版本的唯一来源。
+- `config/config-template.json` 通过 `npm run config:template` 生成，不手工维护第二套默认值。
+- 运行配置默认位于 Electron `userData/config.json`；设置 `paths.configDir` 后使用指定目录。
+- 配置分为用户偏好、敏感凭据、运行策略、运行状态和派生路径；敏感字段不得写入模板、日志和诊断输出。
+- 新字段必须说明 owner、生产者、消费者、持久化、迁移、回滚和删除条件。
+- v1 配置精简先做字段盘点和读写追踪，将字段标为用户明确选择、凭据、内部运行策略、派生路径或持久化状态；未确认用途和消费者前不删字段。
+- 界面只暴露用户能理解且需要主动决策的选项；内部运行参数优先使用安全默认值，归入高级选项前应证明用户确实需要调节。
+- 废弃字段先停止写入，再提供迁移/兼容期和回滚说明；不得直接删除用户现有值或把不兼容迁移混入界面重做。
 
-项目中并存两类 IPC：
+## 架构改造路线
 
-1. 请求/响应：`ipcMain.handle()` + `ipcRenderer.invoke()`
-2. 事件推送：`ipcMain.on()` + `ipcRenderer.send()` / `webContents.send()`
+1. **边界真实化**：验证领域 wrapper 是否承载真实业务边界，逐步替换只转发不隔离依赖的 façade。
+2. **IPC 收敛**：统计并迁移绕过 registry 的 handler/listener，补齐 owner 和契约测试。
+3. **状态统一**：为下载、转写、上传、缓存、重复检测和自动翻译统一状态事件、恢复入口和审计格式。
+4. **Renderer 解耦**：页面只编排 UI 状态；业务计划和副作用下沉到 Main 领域服务。
+5. **体积与启动**：以首屏体积和交互延迟为基线，对低频页面采用异步组件和功能域拆包。
 
-示例：
-
-- 请求/响应：`dialog:openFile`、`get-config`、`tg-scan-recent-activity`
-- 事件推送：`start-task`/`stop-task`、`log-update`、`task-finished`
-- 工作流运行事件：`workflow-run-event`（携带 `runId` 的节点与运行态事件）
-
-窗口加载使用统一的 `loadMainWindowRenderer()` 入口，开发与生产环境都会保留
-`WORKFLOW_INITIAL_VIEW`、`WORKFLOW_PARITY_SCENE` 等启动参数，供工作流截图和初始视图场景使用。
-
----
-
-## 5. 配置管理（`src/main/modules/config.js`）
-
-配置来源优先级（按实际逻辑）：
-
-1. 若配置了 `paths.configDir`，优先读取 `<configDir>/config.json`
-2. 否则读取 AppData 配置：`<userData>/config.json`
-3. 若都不可用，回退到 `DEFAULT_CONFIG`
-
-补充：项目目录下 `config/config.json` 会参与 `configDir` 发现流程。
-
-配置保存行为（2026-03-05 对齐）：
-
-- `saveConfig` 支持路径字段显式清空（如 `""` / `null`），不再忽略空值更新。
-- 当本次保存修改了 `paths.configDir`，会直接写入新目录下的 `config.json`，并同步更新 `<userData>/config.json` 中的 `paths.configDir` 引导指针。
-
-配置字段真相源：`src/main/modules/config.js` 中的 `DEFAULT_CONFIG`。
-
----
-
-## 6. Renderer 组件现状
-
-`src/renderer/src/components/` 当前包含：
-
-- 23 个顶层 `.vue` 组件
-- 1 个 `common/` 子目录
-
-重点组件包括：
-
-- `HomePanel.vue`
-- `UploadTool.vue`
-- `WhisperTool.vue`
-- `RecentActivity.vue`
-- `TgSearchBot.vue`
-- `RjDuplicateDetector.vue`
-- `Settings.vue`
-- `Tools.vue`
-
----
-
-## 7. 当前可验证状态（2026-03-04）
-
-| 项目     | 命令             | 结果                              |
-| -------- | ---------------- | --------------------------------- |
-| 单元测试 | `npm run test`   | ✅ 通过（20/20）                  |
-| 生产构建 | `npm run build`  | ✅ 通过                           |
-| 综合验证 | `npm run verify` | ❌ 失败（lint 阶段有 3 个 error） |
-
-当前 lint 阻塞错误（非本次文档修复引入）：
-
-- `src/main/modules/asmr-login.js`：`axios` 直接导入受限
-- `src/main/modules/asmr.js`：`axios` 直接导入受限
-- `src/main/modules/asmr.js`：`path` 未定义
-
----
-
-## 8. 架构文档同步状态（2026-03-04）
-
-本轮已与代码实现对齐的文档：
-
-- `docs/design-docs/module-index.md`（模块装配状态、兼容模块标记）
-- `docs/design-docs/data-flow.md`（实现态 IPC 与数据流）
-- `docs/design-docs/business-background.md`（补充 TG 搜索 Bot / RJ 重复检测）
-- `docs/design-docs/business-boundary.md`（补充频道检索与治理边界）
-- `docs/product-specs/README.md`（功能清单与流程图补齐）
-
----
-
-## 9. 相关文档
-
-- 模块导航：`docs/design-docs/module-index.md`
-- 设计视角：`docs/design-docs/architecture-design.md`
-- 文档结构：`docs/STRUCTURE.md`
-- 质量状态：`docs/quality/README.md`
+这些是 v1 后续实施顺序，不表示当前代码已经全部完成。

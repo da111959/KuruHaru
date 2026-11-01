@@ -14,8 +14,8 @@ const createDefaultWindowState = () => ({
   focused: true,
   darkMode: false,
   themeMode: "auto",
-  windowOpacity: 0.92,
-  blurEnabled: true,
+  windowOpacity: 1,
+  blurEnabled: false,
   blurIntensity: 8,
   blurRenderMode: "system",
   accentColor: "#adb571",
@@ -24,7 +24,7 @@ const createDefaultWindowState = () => ({
 const normalizeOpacity = (rawValue) => {
   const parsed = Number(rawValue);
   if (!Number.isFinite(parsed)) {
-    return 0.92;
+    return 1;
   }
   return Math.min(1, Math.max(0.55, Number(parsed.toFixed(2))));
 };
@@ -61,46 +61,9 @@ const hexToRgba = (hex, alpha) => {
   return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 };
 
-const DARK_TEXT_OVERRIDE_STYLE_ID = "kh-dark-text-overrides";
-const DARK_TEXT_OVERRIDE_CSS = `
-html[data-app-theme="dark"] .app-shell,
-html[data-app-theme="dark"] .app-shell *,
-html[data-app-theme="dark"] .app-shell *::before,
-html[data-app-theme="dark"] .app-shell *::after {
-  color: #ffffff !important;
-}
-
-html[data-app-theme="dark"] .app-shell input::placeholder,
-html[data-app-theme="dark"] .app-shell textarea::placeholder {
-  color: rgba(255, 255, 255, 0.78) !important;
-}
-
-html[data-app-theme="dark"] .app-shell .titlebar-dot,
-html[data-app-theme="dark"] .app-shell .stat-icon,
-html[data-app-theme="dark"] .app-shell .section-icon,
-html[data-app-theme="dark"] .app-shell .status-icon {
-  color: inherit !important;
-}
-`;
-
 export const useWindowShellState = () => {
   const windowState = ref(createDefaultWindowState());
   let unsubscribe = null;
-
-  const syncDarkTextOverrides = (isDark) => {
-    if (typeof document === "undefined" || !document?.head) {
-      return;
-    }
-
-    let styleElement = document.getElementById(DARK_TEXT_OVERRIDE_STYLE_ID);
-    if (!styleElement) {
-      styleElement = document.createElement("style");
-      styleElement.id = DARK_TEXT_OVERRIDE_STYLE_ID;
-      document.head.appendChild(styleElement);
-    }
-
-    styleElement.textContent = isDark ? DARK_TEXT_OVERRIDE_CSS : "";
-  };
 
   const syncRootTheme = (stateSnapshot) => {
     if (typeof document === "undefined" || !document?.documentElement) {
@@ -113,7 +76,7 @@ export const useWindowShellState = () => {
 
     root.setAttribute("data-app-theme", isDark ? "dark" : "light");
     root.style.setProperty("--app-accent", accentColor);
-    syncDarkTextOverrides(isDark);
+    root.style.setProperty("color-scheme", isDark ? "dark" : "light");
   };
 
   const applyState = (nextState) => {
@@ -134,10 +97,7 @@ export const useWindowShellState = () => {
       themeMode:
         typeof nextState.themeMode === "string" ? nextState.themeMode : "auto",
       windowOpacity: normalizeOpacity(nextState.windowOpacity),
-      blurEnabled:
-        typeof nextState.blurEnabled === "boolean"
-          ? nextState.blurEnabled
-          : true,
+      blurEnabled: false,
       blurIntensity: normalizeBlurIntensity(nextState.blurIntensity),
       blurRenderMode: normalizeBlurRenderMode(nextState.blurRenderMode),
       accentColor: normalizeAccentColor(nextState.accentColor),
@@ -188,10 +148,7 @@ export const useWindowShellState = () => {
 
   const windowAppearanceStyle = computed(() => {
     const opacity = normalizeOpacity(windowState.value.windowOpacity);
-    const blurEnabled =
-      typeof windowState.value.blurEnabled === "boolean"
-        ? windowState.value.blurEnabled
-        : true;
+    const blurEnabled = false;
     const blurIntensity = blurEnabled
       ? normalizeBlurIntensity(windowState.value.blurIntensity)
       : 0;

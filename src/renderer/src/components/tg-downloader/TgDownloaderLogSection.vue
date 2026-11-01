@@ -1,10 +1,10 @@
 <template>
-  <div class="log-section">
+  <div class="log-section" role="region" aria-labelledby="tg-downloader-log-title">
     <div class="log-header">
-      <h3>操作日志</h3>
-      <button class="clear-log-btn" @click="emit('clear')">清空</button>
+      <h3 id="tg-downloader-log-title">操作日志</h3>
+      <button class="clear-log-btn" type="button" title="清空当前日志" @click="emit('clear')">清空</button>
     </div>
-    <div class="log-list">
+    <div class="log-list" role="log" aria-live="polite" aria-relevant="additions">
       <div
         v-for="(log, index) in logs"
         :key="index"
@@ -32,7 +32,8 @@ const emit = defineEmits(["clear"]);
 
 <style scoped>
 .log-section {
-  background: #1e1e1e;
+  background: var(--comp-surface-2, var(--page-control-bg, #f7f2e8));
+  border: 1px solid var(--comp-control-border, var(--page-control-border, #d8d0bb));
   border-radius: 12px;
   padding: 20px;
 }
@@ -47,19 +48,19 @@ const emit = defineEmits(["clear"]);
 .log-header h3 {
   margin: 0;
   font-size: 14px;
-  color: #fff;
+  color: var(--comp-text, var(--page-text-strong, #26251f));
 }
 
 .clear-log-btn {
   background: none;
   border: none;
-  color: #999;
+  color: var(--comp-muted, var(--page-text-muted, #66614f));
   cursor: pointer;
   font-size: 12px;
 }
 
 .clear-log-btn:hover {
-  color: #fff;
+  color: var(--accent, #697348);
 }
 
 .log-list {
@@ -71,7 +72,7 @@ const emit = defineEmits(["clear"]);
 
 .log-item {
   padding: 2px 0;
-  color: #ccc;
+  color: var(--comp-muted, var(--page-text-muted, #66614f));
 }
 
 .log-item.success {

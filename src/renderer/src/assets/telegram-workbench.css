@@ -1,0 +1,204 @@
+/* Shared visual language for the Telegram workbench pages. */
+#app :is(.tg-search-bot, .tg-info-cache, .tg-info-error-recover, .rj-duplicate-theme) {
+  --tg-panel: var(--ui-surface);
+  --tg-panel-muted: var(--ui-surface-muted);
+  --tg-border: var(--ui-border);
+  --tg-divider: var(--ui-divider);
+  --tg-text: var(--ui-text-primary);
+  --tg-muted: var(--ui-text-secondary);
+  --tg-accent: var(--ui-action-primary);
+  --tg-accent-hover: var(--ui-action-primary-hover);
+  --tg-danger: var(--ui-action-danger);
+  width: min(100%, 1180px);
+  margin: 0 auto;
+  color: var(--tg-text);
+}
+
+#app :is(.tg-search-bot, .tg-info-cache, .tg-info-error-recover, .rj-duplicate-theme) .page-header {
+  margin-bottom: 18px;
+  padding: 22px 24px;
+  background: var(--tg-panel) !important;
+  border: 1px solid var(--tg-border) !important;
+  border-radius: var(--ui-radius-md) !important;
+}
+
+#app :is(.tg-search-bot, .tg-info-cache, .tg-info-error-recover, .rj-duplicate-theme) .page-title {
+  color: var(--tg-text) !important;
+  font-size: clamp(28px, 3vw, 38px);
+  letter-spacing: -0.02em;
+}
+
+#app :is(.tg-search-bot, .tg-info-cache, .tg-info-error-recover, .rj-duplicate-theme) .bot-card,
+#app .rj-duplicate-theme :is(.config-section, .results-section, .progress-section) {
+  margin-bottom: 16px;
+  padding: 20px;
+  background: var(--tg-panel) !important;
+  border: 1px solid var(--tg-border) !important;
+  border-radius: var(--ui-radius-md) !important;
+  box-shadow: none !important;
+}
+
+#app :is(.tg-search-bot, .tg-info-cache, .tg-info-error-recover, .rj-duplicate-theme) :is(.section-header, .card-header) {
+  margin-bottom: 16px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--tg-divider);
+}
+
+#app :is(.tg-search-bot, .tg-info-cache, .tg-info-error-recover, .rj-duplicate-theme) :is(.section-title, .panel-title) {
+  color: var(--tg-text) !important;
+  font-size: 20px;
+  font-weight: 750;
+}
+
+#app :is(.tg-search-bot, .tg-info-cache, .tg-info-error-recover, .rj-duplicate-theme) :is(.section-caption, .section-summary, .meta-item, .usage-list, .filter-subtitle) {
+  color: var(--tg-muted) !important;
+}
+
+#app :is(.tg-search-bot, .tg-info-cache, .tg-info-error-recover, .rj-duplicate-theme) :is(input, textarea, select, .search-input, .file-input, .url-input, .date-input) {
+  min-height: var(--ui-control-height);
+  border: 1px solid var(--tg-border) !important;
+  border-radius: var(--ui-radius-sm) !important;
+  background: var(--ui-surface-raised) !important;
+  color: var(--tg-text) !important;
+}
+
+#app :is(.tg-search-bot, .tg-info-cache, .tg-info-error-recover, .rj-duplicate-theme) :is(input, textarea, select, .search-input, .file-input, .url-input, .date-input):focus {
+  border-color: var(--ui-focus-ring) !important;
+  outline: 3px solid color-mix(in srgb, var(--ui-focus-ring) 24%, transparent) !important;
+  outline-offset: 1px;
+}
+
+#app :is(.tg-search-bot, .tg-info-cache, .tg-info-error-recover, .rj-duplicate-theme) :is(.btn-primary, .action-btn.primary, .button-primary) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  min-width: 124px;
+  padding: 0 16px;
+  min-height: var(--ui-control-height);
+  border: 1px solid var(--tg-accent) !important;
+  border-radius: var(--ui-radius-sm) !important;
+  background: var(--tg-accent) !important;
+  color: #fff !important;
+}
+
+#app :is(.tg-search-bot, .tg-info-cache, .tg-info-error-recover, .rj-duplicate-theme) :is(.btn-primary, .action-btn.primary, .button-primary):hover:not(:disabled) {
+  background: var(--tg-accent-hover) !important;
+}
+
+#app :is(.tg-search-bot, .tg-info-cache, .tg-info-error-recover, .rj-duplicate-theme) :is(.btn-secondary, .action-btn.secondary, .browse-btn, .button-secondary, .button-subtle) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  min-width: 124px;
+  padding: 0 16px;
+  min-height: var(--ui-control-height);
+  border: 1px solid var(--tg-border) !important;
+  border-radius: var(--ui-radius-sm) !important;
+  background: var(--ui-action-secondary) !important;
+  color: var(--tg-text) !important;
+}
+
+#app :is(.tg-search-bot, .tg-info-cache, .tg-info-error-recover, .rj-duplicate-theme) :is(.btn-danger, .btn-warning) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  min-width: 144px;
+  padding: 0 16px;
+  min-height: var(--ui-control-height);
+  border-radius: var(--ui-radius-sm) !important;
+}
+
+#app :is(.tg-search-bot, .tg-info-cache, .tg-info-error-recover, .rj-duplicate-theme) :is(.control-buttons, .action-bar, .header-actions, .cache-controls) {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+#app :is(.tg-search-bot, .tg-info-cache, .tg-info-error-recover, .rj-duplicate-theme) .button-icon {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+}
+
+#app :is(.tg-search-bot, .tg-info-cache, .tg-info-error-recover, .rj-duplicate-theme) .result-state-icon {
+  width: 22px;
+  height: 22px;
+  flex: 0 0 22px;
+}
+
+#app :is(.tg-search-bot, .tg-info-cache, .tg-info-error-recover, .rj-duplicate-theme) .search-input-group {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+}
+
+#app :is(.tg-search-bot, .tg-info-cache, .tg-info-error-recover, .rj-duplicate-theme) .search-input-group > input,
+#app :is(.tg-search-bot, .tg-info-cache, .tg-info-error-recover, .rj-duplicate-theme) .search-input-group > .search-input {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+#app :is(.tg-search-bot, .tg-info-cache, .tg-info-error-recover, .rj-duplicate-theme) .search-input-group > button {
+  flex: 0 0 auto;
+  min-width: 124px !important;
+  width: auto !important;
+  white-space: nowrap;
+}
+
+#app :is(.tg-search-bot, .tg-info-cache, .tg-info-error-recover, .rj-duplicate-theme) .control-buttons > button,
+#app :is(.tg-search-bot, .tg-info-cache, .tg-info-error-recover, .rj-duplicate-theme) .action-bar > button,
+#app :is(.tg-search-bot, .tg-info-cache, .tg-info-error-recover, .rj-duplicate-theme) .cache-controls > button {
+  white-space: nowrap;
+}
+
+#app :is(.tg-search-bot, .tg-info-cache, .tg-info-error-recover, .rj-duplicate-theme) :is(.btn-primary, .btn-secondary, .btn-danger, .btn-warning, .action-btn, .button-primary, .button-secondary, .button-subtle, .browse-btn) {
+  font-size: 14px !important;
+  font-weight: 700 !important;
+  letter-spacing: 0;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+#app :is(.tg-search-bot, .tg-info-cache, .tg-info-error-recover, .rj-duplicate-theme) :is(.status-badge, .status-tag, .header-chip, .count-badge) {
+  border-radius: 999px;
+}
+
+#app :is(.tg-search-bot, .tg-info-cache, .tg-info-error-recover, .rj-duplicate-theme) :is(.result-box, .success-result, .error-result, .empty-state, .usage-section, .summary-item) {
+  border-radius: var(--ui-radius-sm);
+}
+
+#app .rj-duplicate-theme .table-wrap,
+#app .rj-duplicate-theme .data-table-scroll {
+  overflow-x: auto;
+  border: 1px solid var(--tg-border);
+  border-radius: var(--ui-radius-sm);
+}
+
+@media (max-width: 720px) {
+  #app :is(.tg-search-bot, .tg-info-cache, .tg-info-error-recover, .rj-duplicate-theme) .page-header,
+  #app :is(.tg-search-bot, .tg-info-cache, .tg-info-error-recover, .rj-duplicate-theme) .bot-card,
+  #app .rj-duplicate-theme :is(.config-section, .results-section, .progress-section) {
+    padding: 16px;
+  }
+
+  #app :is(.tg-search-bot, .tg-info-cache, .tg-info-error-recover, .rj-duplicate-theme) :is(.control-buttons, .action-bar, .header-actions) > button {
+    flex: 1 1 100%;
+    width: 100%;
+  }
+
+  #app :is(.tg-search-bot, .tg-info-cache, .tg-info-error-recover, .rj-duplicate-theme) .search-input-group {
+    flex-direction: column;
+  }
+
+  #app :is(.tg-search-bot, .tg-info-cache, .tg-info-error-recover, .rj-duplicate-theme) .search-input-group > button {
+    width: 100%;
+    min-width: 0 !important;
+  }
+}

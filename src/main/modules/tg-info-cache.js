@@ -1,7 +1,7 @@
 ﻿import fs from "fs";
 import fsp from "fs/promises";
 import path from "path";
-import { ipcMain, powerMonitor } from "electron";
+import { powerMonitor } from "electron";
 import { getConfig, getDataDir } from "./config";
 import { getHttpClient } from "./httpClient";
 import { normalizeError } from "../utils/errorHandler";
@@ -12,24 +12,38 @@ import {
   extractWorkCodes,
   normalizeWorkCode,
 } from "./tg-info-bot-core/work-code-parsers";
+import { CONFIG_DEFAULTS } from "../../shared/config-contract.mjs";
+import {
+  compareInfoCacheEvictionCandidates,
+  getInfoCacheFreshness,
+  INFO_CACHE_META_FIELD,
+  normalizeInfoCacheMetadata,
+  withInfoCacheMetadata,
+} from "./tg-info-cache-contract.js";
 
 const logger = createLogSender("tg-info-cache");
 
 const DEFAULT_CACHE_FILE_NAME = "tg-info-cache.json";
-const DEFAULT_TIMEOUT_MS = 20000;
-const DEFAULT_MAX_CONCURRENCY = 5;
-const DEFAULT_MAX_FILE_SIZE_MB = 50;
+const DEFAULT_TIMEOUT_MS = CONFIG_DEFAULTS.tg.infoRequestTimeoutMs;
+const DEFAULT_MAX_CONCURRENCY = CONFIG_DEFAULTS.tg.infoCacheMaxConcurrency;
+const DEFAULT_MAX_FILE_SIZE_MB = CONFIG_DEFAULTS.tg.infoCacheMaxFileSizeMB;
 const MAX_FETCH_RETRIES = 3;
 const CACHE_STATE_TTL_MS = 5000;
 const CACHE_ENTRY_TS_FIELD = "__khCacheUpdatedAt";
+const INFO_CACHE_STALE_AFTER_MS = 24 * 60 * 60 * 1000;
 const HOT_CACHE_PAGE_SIZE = 100;
 const HOT_CACHE_PAGE_NUMBER = 1;
-const HOT_CACHE_DEFAULT_INTERVAL_MS = 60 * 60 * 1000;
-const HOT_CACHE_DEFAULT_ACTIVE_INTERVAL_MS = 20 * 60 * 1000;
-const HOT_CACHE_DEFAULT_COOL_INTERVAL_MS = 3 * 60 * 60 * 1000;
-const HOT_CACHE_DEFAULT_ACTIVE_WINDOW_MS = 24 * 60 * 60 * 1000;
-const HOT_CACHE_DEFAULT_COOL_AFTER_MS = 72 * 60 * 60 * 1000;
-const HOT_CACHE_DEFAULT_STARTUP_DELAY_MS = 1500;
+const HOT_CACHE_DEFAULT_INTERVAL_MS = CONFIG_DEFAULTS.tg.infoHotCacheIntervalMs;
+const HOT_CACHE_DEFAULT_ACTIVE_INTERVAL_MS =
+  CONFIG_DEFAULTS.tg.infoHotCacheActiveIntervalMs;
+const HOT_CACHE_DEFAULT_COOL_INTERVAL_MS =
+  CONFIG_DEFAULTS.tg.infoHotCacheCoolIntervalMs;
+const HOT_CACHE_DEFAULT_ACTIVE_WINDOW_MS =
+  CONFIG_DEFAULTS.tg.infoHotCacheActiveWindowMs;
+const HOT_CACHE_DEFAULT_COOL_AFTER_MS =
+  CONFIG_DEFAULTS.tg.infoHotCacheCoolAfterMs;
+const HOT_CACHE_DEFAULT_STARTUP_DELAY_MS =
+  CONFIG_DEFAULTS.tg.infoHotCacheStartupDelayMs;
 const HOT_CACHE_STALE_GUARD_INTERVAL_MS = 60 * 1000;
 const ASMR_ONE_WORKS_API_URL = "https://api.asmr.one/api/works";
 const ASMR_ONE_WORK_PAGE_URL_PREFIX = "https://www.asmr.one/work/";
@@ -63,6 +77,12 @@ let hotCacheTimer = null;
 let hotCacheWatchdogTimer = null;
 let hotCacheSyncTask = null;
 let hotCacheSchedulerStarted = false;
+let hotCacheSchedulerGeneration = 0;
+let hotCachePaused = false;
+let hotCacheFailureCount = 0;
+let hotCacheNextRetryAt = null;
+let cacheEvictionStats = { runs: 0, totalEvicted: 0, lastEvicted: 0, lastAt: null };
+let cacheReadStats = { hit: 0, staleHit: 0, refreshFailed: 0, notFound: 0 };
 let hotCacheStartupTask = null;
 let hotCacheResumeListenerRegistered = false;
 let hotCacheState = {
@@ -411,7 +431,11 @@ function buildAsmrOneHotCacheEntry(work = {}) {
     entry.其他 = "ASMR.ONE 有字幕";
   }
 
-  return withCacheTimestamp(entry);
+  return withCacheTimestamp(
+    withCacheProvenance(entry, {
+      source: entry["来源"],
+    }),
+  );
 }
 
 function buildAsmrOneHotCacheWorkSummary(work = {}) {
@@ -521,12 +545,18 @@ function clearHotCacheWatchdogTimer() {
 function scheduleNextHotCacheSync(runtimeConfig) {
   clearHotCacheTimer();
 
-  if (!runtimeConfig.hotCacheEnabled) {
+  if (!runtimeConfig.hotCacheEnabled || hotCachePaused) {
     logger.info("[tg-info-cache] 热缓存定时器已关闭");
     return;
   }
 
-  const delayMs = resolveHotCacheNextDelay(runtimeConfig);
+  const normalDelayMs = resolveHotCacheNextDelay(runtimeConfig);
+  const backoffMs =
+    hotCacheFailureCount > 0
+      ? Math.min(6 * 60 * 60 * 1000, 30_000 * 2 ** (hotCacheFailureCount - 1))
+      : 0;
+  const delayMs = Math.max(normalDelayMs, backoffMs);
+  hotCacheNextRetryAt = new Date(Date.now() + delayMs).toISOString();
   hotCacheTimer = setTimeout(() => {
     syncAsmrOneHotCachePage({ reason: "timer" })
       .catch((error) => {
@@ -605,11 +635,11 @@ function registerHotCacheResumeRefresh() {
 
 export function triggerHotCacheSelfHealRefresh(options = {}) {
   const runtimeConfig = getInfoCacheRuntimeConfig(getConfig());
-  if (!runtimeConfig.hotCacheEnabled) {
+  if (!runtimeConfig.hotCacheEnabled || hotCachePaused) {
     return Promise.resolve({
       success: true,
       skipped: true,
-      reason: "hot_cache_disabled",
+      reason: hotCachePaused ? "hot_cache_paused" : "hot_cache_disabled",
     });
   }
 
@@ -713,10 +743,33 @@ export function syncAsmrOneHotCachePage(options = {}) {
     }
 
     const now = Date.now();
-    const fetchResult = await fetchAsmrOneHotWorks(runtimeConfig);
+    let fetchResult;
+    try {
+      fetchResult = await fetchAsmrOneHotWorks(runtimeConfig);
+    } catch (error) {
+      hotCacheFailureCount += 1;
+      hotCacheNextRetryAt = new Date(
+        Date.now() +
+          Math.min(6 * 60 * 60 * 1000, 30_000 * 2 ** (hotCacheFailureCount - 1)),
+      ).toISOString();
+      hotCacheState.lastCheckedAt = now;
+      hotCacheState.lastResult = "failed";
+      hotCacheState.mode = resolveHotCacheMode(runtimeConfig, now);
+      const normalizedError = normalizeError(error);
+      return {
+        success: false,
+        error: normalizedError.error?.message || normalizedError.message,
+        outputFilePath: runtimeConfig.cacheFilePath,
+      };
+    }
     hotCacheState.lastCheckedAt = now;
 
     if (!fetchResult.success) {
+      hotCacheFailureCount += 1;
+      hotCacheNextRetryAt = new Date(
+        Date.now() +
+          Math.min(6 * 60 * 60 * 1000, 30_000 * 2 ** (hotCacheFailureCount - 1)),
+      ).toISOString();
       hotCacheState.lastResult = "failed";
       hotCacheState.mode = resolveHotCacheMode(runtimeConfig, now);
       return {
@@ -725,6 +778,9 @@ export function syncAsmrOneHotCachePage(options = {}) {
         outputFilePath: runtimeConfig.cacheFilePath,
       };
     }
+
+    hotCacheFailureCount = 0;
+    hotCacheNextRetryAt = null;
 
     if (fetchResult.notModified) {
       hotCacheState.lastResult = "not_modified";
@@ -839,6 +895,7 @@ export function startInfoCacheHotScheduler(options = {}) {
   }
 
   hotCacheSchedulerStarted = true;
+  const generation = ++hotCacheSchedulerGeneration;
   hotCacheStartupTask = (async () => {
     const runtimeConfig = getInfoCacheRuntimeConfig(getConfig());
     if (!runtimeConfig.hotCacheEnabled) {
@@ -860,6 +917,10 @@ export function startInfoCacheHotScheduler(options = {}) {
       await new Promise((resolve) => setTimeout(resolve, startupDelayMs));
     }
 
+    if (generation !== hotCacheSchedulerGeneration) {
+      return { success: true, skipped: true, reason: "scheduler_stopped" };
+    }
+
     registerHotCacheResumeRefresh();
     scheduleHotCacheStaleGuard(runtimeConfig);
 
@@ -874,9 +935,11 @@ export function startInfoCacheHotScheduler(options = {}) {
         "[tg-info-cache] 热缓存启动异常",
         normalizedError.error?.message || normalizedError.message,
       );
-      registerHotCacheResumeRefresh();
-      scheduleHotCacheStaleGuard(getInfoCacheRuntimeConfig(getConfig()));
-      scheduleNextHotCacheSync(getInfoCacheRuntimeConfig(getConfig()));
+      if (generation === hotCacheSchedulerGeneration) {
+        registerHotCacheResumeRefresh();
+        scheduleHotCacheStaleGuard(getInfoCacheRuntimeConfig(getConfig()));
+        scheduleNextHotCacheSync(getInfoCacheRuntimeConfig(getConfig()));
+      }
       return {
         success: false,
         error: normalizedError.error?.message || normalizedError.message,
@@ -887,6 +950,42 @@ export function startInfoCacheHotScheduler(options = {}) {
     });
 
   return hotCacheStartupTask;
+}
+
+export async function stopInfoCacheHotScheduler() {
+  hotCacheSchedulerGeneration += 1;
+  hotCacheSchedulerStarted = false;
+  clearHotCacheTimer();
+  clearHotCacheWatchdogTimer();
+  if (hotCacheStartupTask) await hotCacheStartupTask.catch(() => undefined);
+  hotCacheStartupTask = null;
+  if (hotCacheSyncTask) await hotCacheSyncTask.catch(() => undefined);
+  hotCacheSyncTask = null;
+  logger.info("[tg-info-cache] 热缓存调度器已停止");
+}
+
+export async function pauseInfoCacheHotScheduler() {
+  hotCachePaused = true;
+  clearHotCacheTimer();
+  clearHotCacheWatchdogTimer();
+  logger.info("[tg-info-cache] 热缓存调度器已暂停");
+  return { success: true, paused: true };
+}
+
+export async function resumeInfoCacheHotScheduler(options = {}) {
+  hotCachePaused = false;
+  if (!hotCacheSchedulerStarted) {
+    return startInfoCacheHotScheduler({ startupDelayMs: options.startupDelayMs ?? 0 });
+  }
+  const runtimeConfig = getInfoCacheRuntimeConfig(getConfig());
+  if (!runtimeConfig.hotCacheEnabled) {
+    return { success: true, paused: false, skipped: true, reason: "hot_cache_disabled" };
+  }
+  registerHotCacheResumeRefresh();
+  scheduleHotCacheStaleGuard(runtimeConfig);
+  const result = await syncAsmrOneHotCachePage({ reason: "resume_manual" });
+  scheduleNextHotCacheSync(getInfoCacheRuntimeConfig(getConfig()));
+  return { ...result, paused: false };
 }
 
 function toCacheTimestamp(rawValue, fallbackValue = Date.now()) {
@@ -917,6 +1016,45 @@ function withCacheTimestamp(entry, fallbackTimestamp = Date.now()) {
       fallbackTimestamp,
     ),
   };
+}
+
+function withCacheProvenance(entry, fallback = {}) {
+  if (!entry || typeof entry !== "object") return entry;
+  const source = String(fallback.source || entry["来源"] || "unknown");
+  const oldFieldSources = normalizeInfoCacheMetadata(entry).fieldSources || {};
+  const fieldSources = {};
+  for (const key of Object.keys(entry)) {
+    if (
+      key !== INFO_CACHE_META_FIELD &&
+      key !== CACHE_ENTRY_TS_FIELD &&
+      key !== "RJ"
+    ) {
+      fieldSources[key] = fallback.fieldSources?.[key] || oldFieldSources[key] || source;
+    }
+  }
+  for (const [key, value] of Object.entries(fallback.fieldSources || {})) {
+    if (Object.hasOwn(entry, key)) fieldSources[key] = value;
+  }
+  return withInfoCacheMetadata(entry, {
+    ...normalizeInfoCacheMetadata(entry),
+    fetchedAt: fallback.fetchedAt || entry[CACHE_ENTRY_TS_FIELD] || Date.now(),
+    source,
+    fieldSources,
+  });
+}
+
+function markCacheAccess(entry, now = Date.now()) {
+  return withInfoCacheMetadata(entry, {
+    ...normalizeInfoCacheMetadata(entry),
+    accessedAt: now,
+  });
+}
+
+function getCacheResponseStatus(entry, now = Date.now()) {
+  return getInfoCacheFreshness(entry, {
+    now,
+    staleAfterMs: INFO_CACHE_STALE_AFTER_MS,
+  });
 }
 
 function serializeComparableCacheEntry(entry) {
@@ -1170,7 +1308,12 @@ function mergeInfoValue(currentValue, nextValue) {
   return nextValue;
 }
 
-function mergeSupplementalInfo(targetInfo, supplementalInfo) {
+function mergeSupplementalInfo(
+  targetInfo,
+  supplementalInfo,
+  source = "unknown",
+  fieldSources = {},
+) {
   if (!targetInfo || typeof targetInfo !== "object" || !supplementalInfo) {
     return;
   }
@@ -1183,17 +1326,22 @@ function mergeSupplementalInfo(targetInfo, supplementalInfo) {
     if (key === "封面图") {
       if (isPlaceholderCoverUrl(targetInfo[key])) {
         targetInfo[key] = normalizeCoverUrl(value);
+        fieldSources[key] = source;
       }
       return;
     }
 
     if (isEmptyInfoValue(targetInfo[key])) {
       targetInfo[key] = mergeInfoValue(targetInfo[key], value);
+      fieldSources[key] = source;
       return;
     }
 
     if (Array.isArray(targetInfo[key]) || Array.isArray(value)) {
       targetInfo[key] = mergeInfoValue(targetInfo[key], value);
+      fieldSources[key] = fieldSources[key]
+        ? `${fieldSources[key]}+${source}`
+        : source;
     }
   });
 }
@@ -1381,6 +1529,10 @@ async function fetchWorkInfoFromRemote(client, workCode) {
   );
 
   let extraData = null;
+  const extraFieldSources = {};
+  const finalFieldSources = Object.fromEntries(
+    Object.keys(info).filter((key) => key !== "RJ").map((key) => [key, "DLSite"]),
+  );
   let hasWorkDetailPage = false;
   let asmrSearchData = null;
 
@@ -1393,6 +1545,9 @@ async function fetchWorkInfoFromRemote(client, workCode) {
     if (htmlContent) {
       extraData = parseDlsiteHtml(htmlContent);
       if (extraData) {
+        Object.keys(extraData).forEach((key) => {
+          extraFieldSources[key] = "DLSite";
+        });
         hasWorkDetailPage = true;
         info["DLSite链接"] = workUrl;
         info["DLSite页面类型"] = "work";
@@ -1417,7 +1572,12 @@ async function fetchWorkInfoFromRemote(client, workCode) {
       const announceData = parseDlsiteHtml(announceHtml);
       if (announceData) {
         extraData = extraData || {};
-        mergeSupplementalInfo(extraData, announceData);
+        mergeSupplementalInfo(
+          extraData,
+          announceData,
+          "Announce",
+          extraFieldSources,
+        );
         appendSourceTag(info, "Announce");
         if (!hasWorkDetailPage) {
           info["DLSite链接"] =
@@ -1437,6 +1597,9 @@ async function fetchWorkInfoFromRemote(client, workCode) {
     if (dlwData) {
       extraData = parseDlwatcher(dlwData);
       if (extraData) {
+        Object.keys(extraData).forEach((key) => {
+          extraFieldSources[key] = "DLWatcher";
+        });
         info["来源"] = `${info["来源"]}/DLWatcher`;
       }
     }
@@ -1451,6 +1614,9 @@ async function fetchWorkInfoFromRemote(client, workCode) {
     if (asmrSearchData) {
       extraData = parseAsmrOne(asmrSearchData);
       if (extraData) {
+        Object.keys(extraData).forEach((key) => {
+          extraFieldSources[key] = "ASMR.ONE";
+        });
         info["来源"] = `${info["来源"]}/ASMR.ONE`;
       }
     }
@@ -1476,10 +1642,22 @@ async function fetchWorkInfoFromRemote(client, workCode) {
   }
 
   if (extraData) {
+    Object.entries(extraData).forEach(([key, value]) => {
+      const canReplacePlaceholder =
+        key === "封面图" && isPlaceholderCoverUrl(info[key]) && !isEmptyInfoValue(value);
+      const canFillEmpty = isEmptyInfoValue(info[key]) && !isEmptyInfoValue(value);
+      const canMergeArray = Array.isArray(info[key]) && Array.isArray(value);
+      if (canReplacePlaceholder || canFillEmpty || canMergeArray) {
+        finalFieldSources[key] = extraFieldSources[key] || "supplemental";
+      }
+    });
     mergeSupplementalInfo(info, extraData);
   }
 
-  return withCacheTimestamp(info);
+  return withCacheProvenance(withCacheTimestamp(info), {
+    source: info["来源"],
+    fieldSources: finalFieldSources,
+  });
 }
 
 async function loadCacheEntries(runtimeConfig, options = {}) {
@@ -1544,14 +1722,20 @@ async function loadCacheEntries(runtimeConfig, options = {}) {
       }
 
       entries[normalizedCode] = withCacheTimestamp(
-        {
+        withCacheProvenance({
           ...item,
           RJ: normalizedCode,
           年龄指定: normalizeAgeCategoryLabel(
             item["年龄指定"] || item.age_category_string || item.age_category,
             item.age_category,
           ),
-        },
+        }, {
+          fetchedAt:
+            item[INFO_CACHE_META_FIELD]?.fetchedAt ||
+            item[CACHE_ENTRY_TS_FIELD] ||
+            fileStats?.mtimeMs || now,
+          source: item[INFO_CACHE_META_FIELD]?.source || item["来源"],
+        }),
         fileStats?.mtimeMs || now,
       );
     });
@@ -1609,6 +1793,9 @@ function buildEvictionOrder(entries) {
       const rightCode = right[0];
       const leftEntry = left[1];
       const rightEntry = right[1];
+
+      const recencyDiff = compareInfoCacheEvictionCandidates(left, right);
+      if (recencyDiff !== 0) return recencyDiff;
 
       const leftTs = toCacheTimestamp(leftEntry?.[CACHE_ENTRY_TS_FIELD], 0);
       const rightTs = toCacheTimestamp(rightEntry?.[CACHE_ENTRY_TS_FIELD], 0);
@@ -1685,6 +1872,12 @@ async function persistCacheEntries(runtimeConfig, entries) {
   const { payload } = trimmed;
 
   if (trimmed.evictedCodes.length > 0) {
+    cacheEvictionStats = {
+      runs: cacheEvictionStats.runs + 1,
+      totalEvicted: cacheEvictionStats.totalEvicted + trimmed.evictedCodes.length,
+      lastEvicted: trimmed.evictedCodes.length,
+      lastAt: Date.now(),
+    };
     logger.warn(
       `[tg-info-cache] 触发缓存淘汰 evicted=${trimmed.evictedCodes.length} currentSize=${payload.fileSize} limit=${trimmed.maxBytes}`,
     );
@@ -1724,7 +1917,18 @@ export async function getWorkInfoFromCache(rawCode, options = {}) {
     options.runtimeConfig || getInfoCacheRuntimeConfig(getConfig());
   const entries = await loadCacheEntries(runtimeConfig, options);
 
-  return entries[code] || null;
+  const entry = entries[code] || null;
+  if (!entry) {
+    cacheReadStats.notFound += 1;
+    return null;
+  }
+
+  const now = Date.now();
+  const status = getCacheResponseStatus(entry, now);
+  cacheReadStats[status === "hit" ? "hit" : "staleHit"] += 1;
+  const accessedEntry = markCacheAccess(entry, now);
+  entries[code] = accessedEntry;
+  return { ...accessedEntry, cacheStatus: status };
 }
 
 export async function fetchWorkInfoByCode(rawCode, options = {}) {
@@ -1750,7 +1954,10 @@ export async function fetchWorkInfoByCode(rawCode, options = {}) {
     });
 
     if (cacheHit) {
-      if (persistResult && !hasListenOnlineHint(cacheHit)) {
+      const shouldRefresh =
+        persistResult &&
+        (cacheHit.cacheStatus === "stale_hit" || !hasListenOnlineHint(cacheHit));
+      if (shouldRefresh) {
         const client = options.client || getSharedInfoHttpClient(runtimeConfig);
         const refreshedData = await fetchWorkInfoFromRemote(client, code);
 
@@ -1759,7 +1966,11 @@ export async function fetchWorkInfoByCode(rawCode, options = {}) {
 
           try {
             const entries = await loadCacheEntries(runtimeConfig);
-            entries[code] = withCacheTimestamp(refreshedData);
+            entries[code] = withCacheTimestamp(
+              withCacheProvenance(refreshedData, {
+                source: refreshedData["来源"],
+              }),
+            );
             await persistCacheEntries(runtimeConfig, entries);
           } catch (error) {
             cachePersisted = false;
@@ -1773,15 +1984,40 @@ export async function fetchWorkInfoByCode(rawCode, options = {}) {
           return {
             success: true,
             source: "remote",
+            cacheStatus: "refreshed",
             data: refreshedData,
             cachePersisted,
           };
         }
+
+        cacheReadStats.refreshFailed += 1;
+        const failure = { at: Date.now(), code: "remote_unavailable" };
+        const entries = await loadCacheEntries(runtimeConfig);
+        entries[code] = withInfoCacheMetadata(entries[code], {
+          ...normalizeInfoCacheMetadata(entries[code]),
+          lastRefreshFailure: failure,
+        });
+        if (persistResult) {
+          try {
+            await persistCacheEntries(runtimeConfig, entries);
+          } catch {
+            // The stale record remains usable even if diagnostic metadata cannot be persisted.
+          }
+        }
+
+        return {
+          success: true,
+          source: "cache",
+          cacheStatus: "refresh_failed",
+          refreshFailure: failure,
+          data: cacheHit,
+        };
       }
 
       return {
         success: true,
         source: "cache",
+        cacheStatus: cacheHit.cacheStatus,
         data: cacheHit,
       };
     }
@@ -1791,8 +2027,10 @@ export async function fetchWorkInfoByCode(rawCode, options = {}) {
   const remoteData = await fetchWorkInfoFromRemote(client, code);
 
   if (!remoteData) {
+    cacheReadStats.notFound += 1;
     return {
       success: false,
+      cacheStatus: "not_found",
       error: `未找到 ${code}`,
     };
   }
@@ -1802,7 +2040,9 @@ export async function fetchWorkInfoByCode(rawCode, options = {}) {
   if (persistResult) {
     try {
       const entries = await loadCacheEntries(runtimeConfig);
-      entries[code] = withCacheTimestamp(remoteData);
+      entries[code] = withCacheTimestamp(
+        withCacheProvenance(remoteData, { source: remoteData["来源"] }),
+      );
       await persistCacheEntries(runtimeConfig, entries);
     } catch (error) {
       cachePersisted = false;
@@ -1817,7 +2057,8 @@ export async function fetchWorkInfoByCode(rawCode, options = {}) {
   return {
     success: true,
     source: "remote",
-    data: remoteData,
+    cacheStatus: "refreshed",
+    data: withCacheProvenance(remoteData, { source: remoteData["来源"] }),
     cachePersisted,
   };
 }
@@ -2276,6 +2517,9 @@ export async function getInfoCacheStatus(options = {}) {
     maxFileSizeBytes: nextRuntimeConfig.maxFileSizeBytes,
     hotCache: {
       enabled: nextRuntimeConfig.hotCacheEnabled,
+      paused: hotCachePaused,
+      failureCount: hotCacheFailureCount,
+      nextRetryAt: hotCacheNextRetryAt,
       mode: hotCacheState.mode,
       pageSize: nextRuntimeConfig.hotCachePageSize,
       lastCheckedAt: hotCacheState.lastCheckedAt,
@@ -2284,34 +2528,11 @@ export async function getInfoCacheStatus(options = {}) {
       lastSyncSummary: hotCacheState.lastSyncSummary,
       recentWorks: hotCacheState.recentWorks,
     },
+    cache: {
+      staleAfterMs: INFO_CACHE_STALE_AFTER_MS,
+      reads: { ...cacheReadStats },
+      evictions: { ...cacheEvictionStats },
+    },
   };
 }
 
-export function setupTgInfoCacheIPC() {
-  logger.debug("[tg-info-cache] 正在初始化 IPC 处理器...");
-
-  const handlers = ["tg-info-cache-build", "tg-info-cache-status"];
-
-  handlers.forEach((handler) => {
-    try {
-      ipcMain.removeHandler(handler);
-    } catch (error) {
-      const normalizedError = normalizeError(error);
-      logger.warn(
-        `[tg-info-cache] removeHandler(${handler}) 失败`,
-        normalizedError.error?.message || normalizedError.message,
-      );
-    }
-  });
-
-  ipcMain.handle("tg-info-cache-build", async (_event, payload = {}) => {
-    const inputFilePath = payload?.inputFilePath || payload?.filePath || "";
-    return await buildInfoCacheFromTextFile(inputFilePath, payload);
-  });
-
-  ipcMain.handle("tg-info-cache-status", async (_event, payload = {}) => {
-    return await getInfoCacheStatus(payload);
-  });
-
-  logger.debug("[tg-info-cache] IPC 处理器注册完成");
-}

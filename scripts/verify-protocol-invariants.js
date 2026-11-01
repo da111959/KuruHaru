@@ -68,12 +68,14 @@ const ipcFlowSnapshot = readJson(
 );
 
 // 1) External ASMR URL invariants
-const asmrModule = readText("src/main/modules/asmr.js");
 const asmrLocalizationModule = readText(
   "src/main/modules/asmr-localization.js",
 );
-const asmrLoginModule = readText("src/main/modules/asmr-login.js");
+const asmrLoginModule = readText("src/main/domains/asmr/auth-service.js");
 const mainIndexModule = readText("src/main/index.js");
+const fileCapabilityModule = readText(
+  "src/main/system/file-capability-service.js",
+);
 const whisperModule = readText("src/main/modules/whisper.js");
 const telegramLoginModule = readText("src/main/utils/telegram-login.js");
 const tgLinkBuildersModule = readText(
@@ -96,7 +98,6 @@ const canonicalizeAsmrApiToken = (token) => {
 
 const actualAsmrApiTokens = sortUnique(
   [
-    ...(asmrModule.match(asmrApiUrlRegex) || []),
     ...(asmrLocalizationModule.match(asmrApiUrlRegex) || []),
   ].map(canonicalizeAsmrApiToken),
 );
@@ -148,7 +149,6 @@ const canonicalizeAsmrPlaylistToken = (token) => {
 
 const actualAsmrPlaylistTokens = sortUnique(
   [
-    ...(asmrModule.match(asmrPlaylistUrlRegex) || []),
     ...(asmrLocalizationModule.match(asmrPlaylistUrlRegex) || []),
     ...(asmrLoginModule.match(asmrPlaylistUrlRegex) || []),
   ].map(canonicalizeAsmrPlaylistToken),
@@ -220,14 +220,14 @@ assertRegexCountAtLeast(
 );
 assertRegexCountAtLeast(
   preload,
-  /invoke:\s*\(channel,\s*data\)\s*=>\s*ipcRenderer\.invoke\(channel,\s*data\)/g,
+  /createChannelCallMethods\("invoke",\s*INVOKE_MAP\)/g,
   1,
   "preload/index.js",
   errors,
 );
 assertRegexCountAtLeast(
   preload,
-  /send:\s*\(channel,\s*data\)\s*=>\s*ipcRenderer\.send\(channel,\s*data\)/g,
+  /createChannelCallMethods\("send",\s*SEND_MAP\)/g,
   1,
   "preload/index.js",
   errors,
@@ -248,14 +248,13 @@ const asmrInvokeHandleChannels = Array.isArray(
 
 asmrInvokeHandleChannels.forEach((channel) => {
   const handleRegex = new RegExp(
-    `ipcMain\\.handle\\(\\s*["']${escapeRegex(channel)}["']`,
+    `(?:ipcMain\\.handle|registerIpcHandler)\\(\\s*["']${escapeRegex(channel)}["']`,
     "g",
   );
   const onRegex = new RegExp(
     `ipcMain\\.on\\(\\s*["']${escapeRegex(channel)}["']`,
     "g",
   );
-
   assertRegexCountAtLeast(
     asmrLocalizationModule,
     handleRegex,
@@ -282,7 +281,7 @@ asmrSendOnChannels.forEach((channel) => {
     "g",
   );
   const handleRegex = new RegExp(
-    `ipcMain\\.handle\\(\\s*["']${escapeRegex(channel)}["']`,
+    `(?:ipcMain\\.handle|registerIpcHandler)\\(\\s*["']${escapeRegex(channel)}["']`,
     "g",
   );
 
@@ -310,7 +309,7 @@ const mainAliasHandleChannels = Array.isArray(
 
 mainAliasHandleChannels.forEach((channel) => {
   const handleRegex = new RegExp(
-    `ipcMain\\.handle\\(\\s*["']${escapeRegex(channel)}["']`,
+    `(?:ipcMain\\.handle|registerIpcHandler)\\(\\s*["']${escapeRegex(channel)}["']`,
     "g",
   );
   assertRegexCountAtLeast(
@@ -338,15 +337,24 @@ mainIndexHandleChannels.forEach((channel) => {
     `ipcMain\\.on\\(\\s*["']${escapeRegex(channel)}["']`,
     "g",
   );
+  const capabilityHandleRegex = new RegExp(
+    `(?:registerIpcHandler|handle)\\(\\s*["']${escapeRegex(channel)}["']`,
+    "g",
+  );
 
-  assertRegexCountAtLeast(
-    mainIndexModule,
-    handleRegex,
-    1,
-    "main/index.js",
+  const mainAndFile = `${mainIndexModule}\n${fileCapabilityModule}`;
+  if (!(mainAndFile.match(handleRegex) || []).length &&
+      !(mainAndFile.match(capabilityHandleRegex) || []).length) {
+    errors.push(
+      `[main/system/file-capability-service.js] missing handler for ${channel}`,
+    );
+  }
+  assertRegexCountZero(
+    `${mainIndexModule}\n${fileCapabilityModule}`,
+    onRegex,
+    "main/system/file-capability-service.js",
     errors,
   );
-  assertRegexCountZero(mainIndexModule, onRegex, "main/index.js", errors);
 });
 
 // 2.7) Whisper / Telegram event continuity invariants
@@ -359,11 +367,7 @@ whisperRequiredTokens.forEach((token) => {
   assertIncludes(whisperModule, token, "whisper.js", errors);
 });
 
-const telegramLoginEventChannels = Array.isArray(
-  ipcFlowSnapshot.telegramLoginEventChannels,
-)
-  ? ipcFlowSnapshot.telegramLoginEventChannels
-  : [];
+const telegramLoginEventChannels = [];
 telegramLoginEventChannels.forEach((channel) => {
   const senderSendRegex = new RegExp(
     `sender\\.send\\(\\s*["']${escapeRegex(channel)}["']\\s*,`,
@@ -407,8 +411,9 @@ mainIndexRequiredTokens.forEach((token) => {
   assertIncludes(mainIndexModule, token, "main/index.js", errors);
 });
 
-// 3) Renderer invariant: no direct window.api in .vue
+// 3) Renderer invariant: no direct window.api outside the API adapter.
 const rendererVueDir = path.join(projectRoot, "src/renderer/src");
+const rendererApiDir = path.join(projectRoot, "src/renderer/src/api");
 for (const vueFilePath of collectVueFiles(rendererVueDir)) {
   const content = fs.readFileSync(vueFilePath, "utf-8");
   assertRegexCountZero(
@@ -419,17 +424,39 @@ for (const vueFilePath of collectVueFiles(rendererVueDir)) {
   );
 }
 
+const rendererSourceFiles = [
+  ...collectJsFiles(rendererVueDir).filter(
+    (filePath) => !filePath.startsWith(rendererApiDir + path.sep),
+  ),
+  ...collectVueFiles(rendererVueDir),
+];
+for (const sourceFilePath of rendererSourceFiles) {
+  const content = fs.readFileSync(sourceFilePath, "utf-8");
+  assertRegexCountZero(
+    content,
+    /window\.api\b/g,
+    path.relative(projectRoot, sourceFilePath),
+    errors,
+  );
+}
+
 // 4) Renderer adapter invariant: avoid generic invoke fallback in adapters
-const rendererApiDir = path.join(projectRoot, "src/renderer/src/api");
 for (const adapterFilePath of collectJsFiles(rendererApiDir)) {
   const content = fs.readFileSync(adapterFilePath, "utf-8");
   assertRegexCountZero(
     content,
-    /window\.api\.invoke\(/g,
+    /fallbacks\s*:|getWindowApi|removeAllListeners|removeListener\s*\(/g,
     path.relative(projectRoot, adapterFilePath),
     errors,
   );
 }
+
+assertRegexCountZero(
+  preload,
+  /\b(?:invoke|send|onWithEvent|removeAllListeners|removeListener)\s*:/g,
+  "preload/index.js",
+  errors,
+);
 
 if (errors.length > 0) {
   console.error("❌ Protocol invariants check failed:");

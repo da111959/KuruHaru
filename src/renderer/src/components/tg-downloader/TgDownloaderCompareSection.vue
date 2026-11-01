@@ -1,9 +1,10 @@
 <template>
   <div class="compare-section">
     <div class="input-group">
-      <label>排除已下载（可选）</label>
+      <label for="tg-downloader-exclude-file">排除已下载（可选）</label>
       <div class="file-input-row">
         <input
+          id="tg-downloader-exclude-file"
           :value="excludeFilePath"
           type="text"
           placeholder="选择包含已有RJ/VJ/BJ号的TXT文件"
@@ -18,8 +19,8 @@
     </div>
 
     <div class="filter-options">
-      <label class="checkbox-option">
-        <input v-model="filterValue" type="checkbox" />
+      <label class="checkbox-option" for="tg-downloader-use-filter">
+        <input id="tg-downloader-use-filter" v-model="filterValue" type="checkbox" />
         <span>启用过滤（不下载已存在的RJ/VJ/BJ号）</span>
       </label>
     </div>

@@ -1,4 +1,4 @@
-import { ipcMain } from "electron";
+import { ipcMain, app } from "electron";
 import { spawn } from "child_process";
 import path from "path";
 import fs from "fs";
@@ -11,11 +11,23 @@ import {
   formatSubtitleCompletenessMessage,
   MEDIA_EXTENSIONS,
 } from "./whisper-pack-utils";
+import {
+  createWhisperTaskStateStore,
+  WHISPER_TASK_STATES,
+} from "./whisper-task-state";
 
 // 创建日志发送器
 const logger = createLogSender("whisper");
 const WORK_CODE_REGEX = /(?:RJ|VJ|BJ)\d{6,8}/gi;
 const MAX_AUTO_INFO_CACHE_CODES = 5000;
+const WHISPER_WATCHDOG_TIMEOUT_MS = 10 * 60 * 1000;
+const WHISPER_WATCHDOG_POLL_MS = 15 * 1000;
+const WHISPER_VAD_SHUTDOWN_GRACE_MS = 15 * 1000;
+let activeWhisperStop = null;
+let whisperTaskStore = null;
+let activeWhisperTaskId = null;
+let activeWhisperCancelRequested = false;
+let activeWhisperFinished = false;
 
 function extractWorkCodesFromText(rawText) {
   if (!rawText) return [];
@@ -104,12 +116,34 @@ async function warmInfoCacheFromTranslateTarget(targetPath, event) {
 }
 
 export function setupWhisperIPC() {
+  if (!whisperTaskStore) {
+    whisperTaskStore = createWhisperTaskStateStore(
+      path.join(app.getPath("userData"), "data", "whisper-task-state.json"),
+    );
+    whisperTaskStore.markInterrupted();
+  }
   let pythonProcess = null;
+  activeWhisperStop = async () => {
+    const processToStop = pythonProcess;
+    if (!processToStop || processToStop.killed) return;
+    try {
+      if (process.platform === "win32") {
+        spawn("taskkill", ["/pid", String(processToStop.pid), "/f", "/t"], {
+          windowsHide: true,
+        });
+      } else {
+        processToStop.kill("SIGTERM");
+      }
+    } catch (error) {
+      logger.warn(`[whisper] 停止引擎失败: ${error?.message || error}`);
+    }
+  };
 
   // 统一使用数组管理处理器，便于维护
   const handlers = [
     { channel: "count-media-files", handler: handleCountMediaFiles },
     { channel: "zip-subtitles", handler: handleZipSubtitles },
+    { channel: "whisper-get-task-history", handler: () => whisperTaskStore.list() },
   ];
 
   // 移除所有处理器（静默处理不存在的处理器）
@@ -280,14 +314,18 @@ export function setupWhisperIPC() {
   }
 
   // 1. 开始翻译
-  ipcMain.on("start-task", (event, config) => {
+  ipcMain.on("start-task", async (event, config) => {
     // 写入任务开始标记
     const exePath = config?.exePath || "";
     const logPath = exePath
       ? path.join(path.dirname(exePath), "latest.log")
       : "";
     if (logPath) {
-      fs.appendFileSync(logPath, "[TASK_START]\n", "utf-8");
+      try {
+        fs.appendFileSync(logPath, "[TASK_START]\n", "utf-8");
+      } catch (error) {
+        logger.warn(`[whisper] 无法写入引擎日志标记: ${error.message}`);
+      }
     }
 
     logger.info("收到 start-task 事件");
@@ -301,19 +339,44 @@ export function setupWhisperIPC() {
 
     const targetPath = config?.targetPath || "";
     const subFormats = config?.subFormats || [];
+    const recordPreflightFailure = (field, message) => {
+      const task = whisperTaskStore.start({
+        kind: "translate",
+        targetPath,
+        metadata: { subFormats: Array.isArray(subFormats) ? subFormats : [] },
+      });
+      return whisperTaskStore.finish(task.taskId, WHISPER_TASK_STATES.FAILED, {
+        stage: "preflight",
+        failedField: field,
+        error: message,
+      });
+    };
 
     logger.debug("提取的 targetPath: " + targetPath);
     logger.debug("提取的 subFormats: " + JSON.stringify(subFormats));
 
+    if (pythonProcess && !pythonProcess.killed) {
+      event.sender.send("task-finished", {
+        taskType: "translate",
+        success: false,
+        reason: "task-already-running",
+        error: "已有 Whisper 任务正在运行",
+      });
+      return;
+    }
+
     // 验证必要参数
     if (!exePath) {
       logger.error("错误：exePath 为空，无法启动引擎");
+      const taskResult = recordPreflightFailure("exePath", "引擎路径未设置");
       if (event.sender && !event.sender.isDestroyed()) {
         event.sender.send("task-finished", {
           taskType: "translate",
           success: false,
           reason: "validation-error",
           error: "引擎路径未设置",
+          taskId: taskResult.taskId,
+          wallClockMs: taskResult.wallClockMs,
         });
       }
       return;
@@ -321,16 +384,70 @@ export function setupWhisperIPC() {
 
     if (!targetPath) {
       logger.error("错误：targetPath 为空，无法启动引擎");
+      const taskResult = recordPreflightFailure("targetPath", "目标路径未设置");
       if (event.sender && !event.sender.isDestroyed()) {
         event.sender.send("task-finished", {
           taskType: "translate",
           success: false,
           reason: "validation-error",
           error: "目标路径未设置",
+          taskId: taskResult.taskId,
+          wallClockMs: taskResult.wallClockMs,
         });
       }
       return;
     }
+
+    let preflightError = null;
+    try {
+      if (!fs.existsSync(exePath) || !fs.statSync(exePath).isFile()) {
+        preflightError = { field: "exePath", message: "引擎文件不存在或不是文件" };
+      } else if (!fs.existsSync(targetPath) || !fs.statSync(targetPath).isDirectory()) {
+        preflightError = { field: "targetPath", message: "目标目录不存在或不是目录" };
+      } else {
+        await fs.promises.access(targetPath, fs.constants.R_OK | fs.constants.W_OK);
+      }
+    } catch (error) {
+      preflightError = { field: "targetPath", message: `目标目录不可读写: ${error.message}` };
+    }
+    if (preflightError) {
+      const taskResult = recordPreflightFailure(preflightError.field, preflightError.message);
+      event.sender.send("task-finished", {
+        taskType: "translate",
+        success: false,
+        reason: "validation-error",
+          error: taskResult.error,
+        taskId: taskResult.taskId,
+        wallClockMs: taskResult.wallClockMs,
+      });
+      return;
+    }
+
+    const task = whisperTaskStore.start({
+      kind: "translate",
+      targetPath,
+      metadata: {
+        outputPath: targetPath,
+        subFormats: Array.isArray(subFormats) ? subFormats : [],
+      },
+    });
+    activeWhisperTaskId = task.taskId;
+    activeWhisperCancelRequested = false;
+    activeWhisperFinished = false;
+    whisperTaskStore.transition(
+      activeWhisperTaskId,
+      WHISPER_TASK_STATES.TRANSCRIBING,
+      { stage: "process" },
+    );
+
+    const finishTask = (state, patch = {}) => {
+      if (activeWhisperFinished) return null;
+      activeWhisperFinished = true;
+      const taskId = activeWhisperTaskId;
+      const result = taskId ? whisperTaskStore.finish(taskId, state, patch) : null;
+      activeWhisperTaskId = null;
+      return result;
+    };
 
     warmInfoCacheFromTranslateTarget(targetPath, event).catch((error) => {
       logger.warn(`[whisper] 翻译前缓存异常: ${error?.message || error}`);
@@ -350,14 +467,15 @@ export function setupWhisperIPC() {
       targetPath,
     ];
 
-    // 使用 shell:true + 命令行字符串，避免参数解析问题
-    const command = exePath + " " + args.join(" ");
-    logger.debug("完整命令字符串: " + command);
+    logger.debug("完整命令参数: " + JSON.stringify([exePath, ...args]));
 
     const spawnOptions = {
-      shell: true,
+      // Spawn the engine directly so its PID is the process we own. A cmd
+      // wrapper can outlive the engine and make close/stop handling unreliable.
+      shell: false,
+      windowsHide: true,
       env: { ...process.env, PYTHONUNBUFFERED: "1" },
-      stdio: ["pipe", "pipe", "pipe"],
+      stdio: ["ignore", "pipe", "pipe"],
     };
 
     try {
@@ -365,20 +483,25 @@ export function setupWhisperIPC() {
 
       let spawnError = null;
       try {
-        // Windows: 使用 cmd /c 来运行命令
-        pythonProcess = spawn("cmd", ["/c", command], spawnOptions);
+        pythonProcess = spawn(exePath, args, spawnOptions);
       } catch (e) {
         spawnError = e;
         logger.error("[SPAWN] spawn() 调用异常: " + e.message);
       }
 
       if (spawnError) {
+        const taskResult = finishTask(WHISPER_TASK_STATES.FAILED, {
+          stage: "spawn",
+          error: spawnError.message,
+        });
         if (event.sender && !event.sender.isDestroyed()) {
           event.sender.send("task-finished", {
             taskType: "translate",
             success: false,
             reason: "spawn-error",
             error: spawnError.message,
+            taskId: taskResult?.taskId,
+            wallClockMs: taskResult?.wallClockMs,
           });
         }
         pythonProcess = null;
@@ -392,12 +515,18 @@ export function setupWhisperIPC() {
 
       if (!pythonProcess) {
         logger.error("[SPAWN] 错误: spawn() 返回 null");
+        const taskResult = finishTask(WHISPER_TASK_STATES.FAILED, {
+          stage: "spawn",
+          error: "spawn() returned null",
+        });
         if (event.sender && !event.sender.isDestroyed()) {
           event.sender.send("task-finished", {
             taskType: "translate",
             success: false,
             reason: "spawn-error",
             error: "spawn() returned null",
+            taskId: taskResult?.taskId,
+            wallClockMs: taskResult?.wallClockMs,
           });
         }
         pythonProcess = null;
@@ -409,6 +538,88 @@ export function setupWhisperIPC() {
       let totalFiles = 0;
       let processedFiles = 0;
       let lastLogLine = ""; // 用于去重
+      let lastActivityAt = Date.now();
+      let completionPolls = 0;
+      let completionStopRequested = false;
+      let watchdogTimer = null;
+      let lastDirectoryFingerprint = "";
+      let vadShutdownTimer = null;
+
+      const clearWatchdog = () => {
+        if (watchdogTimer) {
+          clearInterval(watchdogTimer);
+          watchdogTimer = null;
+        }
+        if (vadShutdownTimer) {
+          clearTimeout(vadShutdownTimer);
+          vadShutdownTimer = null;
+        }
+      };
+
+      const touchActivity = () => {
+        lastActivityAt = Date.now();
+      };
+
+      const scheduleVadShutdown = () => {
+        if (vadShutdownTimer || activeWhisperFinished) return;
+        logger.info(
+          `[whisper] 检测到 VAD 注入已停用，等待 ${WHISPER_VAD_SHUTDOWN_GRACE_MS / 1000} 秒确认引擎退出`,
+        );
+        vadShutdownTimer = setTimeout(async () => {
+          vadShutdownTimer = null;
+          if (!pythonProcess || activeWhisperFinished) return;
+          try {
+            const { completeness } = await collectFilesForPacking(targetPath);
+            if (completeness.totalAudioCount > 0 && completeness.isComplete) {
+              completionStopRequested = true;
+              const taskResult = finishTask(WHISPER_TASK_STATES.GENERATED, {
+                stage: "validation",
+                validation: completeness,
+                exitCode: null,
+              });
+              if (event.sender && !event.sender.isDestroyed()) {
+                event.sender.send("task-finished", {
+                  taskType: "translate",
+                  success: true,
+                  reason: "completed-after-vad-shutdown",
+                  taskId: taskResult?.taskId,
+                  wallClockMs: taskResult?.wallClockMs,
+                  validation: completeness,
+                });
+              }
+            } else {
+              activeWhisperCancelRequested = true;
+              const taskResult = finishTask(WHISPER_TASK_STATES.FAILED, {
+                stage: "watchdog",
+                error: "VAD 注入已停用，但 Whisper 引擎未在宽限期内退出",
+                validation: completeness,
+              });
+              if (event.sender && !event.sender.isDestroyed()) {
+                event.sender.send("task-finished", {
+                  taskType: "translate",
+                  success: false,
+                  reason: "vad-shutdown-timeout",
+                  error: "VAD 注入已停用，但 Whisper 引擎未在宽限期内退出",
+                  taskId: taskResult?.taskId,
+                  wallClockMs: taskResult?.wallClockMs,
+                  validation: completeness,
+                });
+              }
+            }
+            await activeWhisperStop?.();
+          } catch (error) {
+            logger.warn(`[whisper] VAD 收尾检查失败: ${error?.message || error}`);
+            activeWhisperCancelRequested = true;
+            finishTask(WHISPER_TASK_STATES.FAILED, {
+              stage: "watchdog",
+              error: `VAD 注入已停用，但引擎未退出: ${error?.message || error}`,
+            });
+            await activeWhisperStop?.();
+          }
+        }, WHISPER_VAD_SHUTDOWN_GRACE_MS);
+      };
+      const isVadShutdownLine = (line) =>
+        /VAD\s*(?:注入已)?停用|VAD.*(?:deactivated|disabled)/i.test(line);
 
       logger.debug("[DEBUG] stdout exists: " + !!pythonProcess.stdout);
       logger.debug("[DEBUG] stderr exists: " + !!pythonProcess.stderr);
@@ -420,6 +631,9 @@ export function setupWhisperIPC() {
         lastLogLine = line;
         if (event.sender && !event.sender.isDestroyed()) {
           event.sender.send("log-update", { type: "whisper", msg: line });
+        }
+        if (isVadShutdownLine(line)) {
+          scheduleVadShutdown();
         }
 
         // 检测进度：找到 x 个文件待处理
@@ -458,6 +672,7 @@ export function setupWhisperIPC() {
 
       // 处理按行分割的数据
       const processBufferedData = (data, buffer, isStderr) => {
+        touchActivity();
         buffer += data.toString();
         const lines = buffer.split(/\r?\n/);
         buffer = lines.pop() || "";
@@ -472,6 +687,9 @@ export function setupWhisperIPC() {
           } else {
             stdoutBuffer += line + "\n";
             logger.info("[STDOUT] " + line);
+            if (isVadShutdownLine(line)) {
+              scheduleVadShutdown();
+            }
           }
         }
         return buffer;
@@ -490,23 +708,47 @@ export function setupWhisperIPC() {
       }
 
       pythonProcess.on("error", (err) => {
+        clearWatchdog();
+        if (
+          activeWhisperCancelRequested ||
+          activeWhisperFinished ||
+          completionStopRequested
+        ) {
+          pythonProcess = null;
+          return;
+        }
         logger.error("[PROCESS_ERROR] Python 进程错误: " + err.message);
         logger.error("[PROCESS_ERROR] 错误代码: " + err.code);
         logger.error("[PROCESS_ERROR] 错误名称: " + err.name);
+        const taskResult = finishTask(WHISPER_TASK_STATES.FAILED, {
+          stage: "process",
+          error: err.message,
+        });
         if (event.sender && !event.sender.isDestroyed()) {
           event.sender.send("task-finished", {
             taskType: "translate",
             success: false,
             reason: "process-error",
             error: err.message,
+            taskId: taskResult?.taskId,
+            wallClockMs: taskResult?.wallClockMs,
           });
         }
         pythonProcess = null;
       });
 
-      pythonProcess.on("close", (code, signal) => {
+      pythonProcess.on("close", async (code, signal) => {
+        clearWatchdog();
         logger.info("引擎关闭 - 退出码: " + code + ", 信号: " + signal);
+        if (activeWhisperCancelRequested || activeWhisperFinished) {
+          activeWhisperCancelRequested = false;
+          pythonProcess = null;
+          return;
+        }
 
+        const completedAfterForcedStop = completionStopRequested;
+        completionStopRequested = false;
+        const effectiveCode = completedAfterForcedStop ? 0 : code;
         const stderrSummary = stderrBuffer.trim()
           ? stderrBuffer.split("\n").slice(0, 5).join("\n")
           : "";
@@ -514,7 +756,7 @@ export function setupWhisperIPC() {
           ? "array-memory-error"
           : undefined;
 
-        if (code !== 0 && code !== null) {
+        if (effectiveCode !== 0 && effectiveCode !== null) {
           logger.error("[ERROR] Python 异常退出，码: " + code);
           if (stderrBuffer.trim()) {
             logger.error("[ERROR] 捕获的 stderr 输出:");
@@ -522,26 +764,169 @@ export function setupWhisperIPC() {
           }
         }
 
-        if (event.sender && !event.sender.isDestroyed()) {
-          let errorMsg = undefined;
-          if (code !== 0 && code !== null) {
-            errorMsg = "进程异常退出 (退出码: " + code + ")";
-            if (stderrBuffer.trim()) {
-              errorMsg += "\n错误信息: " + stderrSummary;
+        let validation = null;
+        let finalState = WHISPER_TASK_STATES.GENERATED;
+        if (effectiveCode === 0) {
+          try {
+            const mediaCount = await countMediaFilesInFolder(targetPath);
+            if (mediaCount === 0) {
+              finalState = WHISPER_TASK_STATES.GENERATED_WITHOUT_MEDIA;
+              validation = {
+                isComplete: true,
+                skippedAudioValidation: true,
+                error: "目标目录中未检测到可处理音频文件",
+              };
+            } else {
+              validation = (await collectFilesForPacking(targetPath)).completeness;
+              if (!validation.isComplete) {
+                finalState = WHISPER_TASK_STATES.VALIDATION_FAILED;
+              }
             }
+          } catch (validationError) {
+            validation = { isComplete: false, error: validationError.message };
+            finalState = WHISPER_TASK_STATES.VALIDATION_FAILED;
           }
+        } else {
+          finalState = WHISPER_TASK_STATES.FAILED;
+        }
+        let errorMsg;
+        if (effectiveCode !== 0) {
+          errorMsg = "进程异常退出 (退出码: " + code + ")";
+          if (stderrBuffer.trim()) errorMsg += "\n错误信息: " + stderrSummary;
+        } else if (finalState === WHISPER_TASK_STATES.VALIDATION_FAILED) {
+          errorMsg = validation?.error || formatSubtitleCompletenessMessage(validation);
+        }
+        const taskResult = finishTask(finalState, {
+          stage:
+            finalState === WHISPER_TASK_STATES.GENERATED ||
+            finalState === WHISPER_TASK_STATES.GENERATED_WITHOUT_MEDIA ||
+            finalState === WHISPER_TASK_STATES.VALIDATION_FAILED
+              ? "validation"
+              : "process",
+          error: errorMsg,
+          validation,
+          exitCode: code,
+          signal,
+        });
+
+        if (event.sender && !event.sender.isDestroyed()) {
           event.sender.send("task-finished", {
             taskType: "translate",
-            success: !errorMsg,
+            success:
+              !errorMsg &&
+              [
+                WHISPER_TASK_STATES.GENERATED,
+                WHISPER_TASK_STATES.GENERATED_WITHOUT_MEDIA,
+              ].includes(finalState),
             reason:
-              nonRecoverableReason || (errorMsg ? "process-exit" : "completed"),
+              nonRecoverableReason ||
+              (finalState === WHISPER_TASK_STATES.VALIDATION_FAILED
+                ? "validation-failed"
+                : errorMsg
+                  ? "process-exit"
+                  : [
+                        WHISPER_TASK_STATES.GENERATED,
+                        WHISPER_TASK_STATES.GENERATED_WITHOUT_MEDIA,
+                      ].includes(finalState)
+                    ? "completed"
+                    : "validation-failed"),
             error: errorMsg,
             exitCode: code,
             signal,
+            taskId: taskResult?.taskId,
+            wallClockMs: taskResult?.wallClockMs,
+            validation,
           });
         }
         pythonProcess = null;
       });
+
+      // VAD cleanup can leave infer.exe alive after all subtitles are written.
+      // End the owned process once output is complete, and kill stalled runs
+      // instead of leaving the renderer busy forever.
+      watchdogTimer = setInterval(async () => {
+        if (!pythonProcess || activeWhisperFinished || completionStopRequested) {
+          return;
+        }
+        try {
+          const { completeness, maxMtime } = await collectFilesForPacking(targetPath);
+          const directoryFingerprint = [
+            completeness.totalAudioCount,
+            completeness.totalSubtitleCount,
+            completeness.matchedAudioCount,
+            maxMtime,
+          ].join(":");
+          if (directoryFingerprint !== lastDirectoryFingerprint) {
+            lastDirectoryFingerprint = directoryFingerprint;
+            touchActivity();
+          }
+          const observedCompletion =
+            totalFiles > 0 &&
+            processedFiles >= totalFiles &&
+            completeness.totalAudioCount > 0 &&
+            completeness.isComplete;
+          if (observedCompletion) {
+            completionPolls += 1;
+          } else {
+            completionPolls = 0;
+          }
+          if (completionPolls >= 2) {
+            completionStopRequested = true;
+            const taskResult = finishTask(WHISPER_TASK_STATES.GENERATED, {
+              stage: "validation",
+              validation: completeness,
+              exitCode: null,
+              error: undefined,
+            });
+            logger.info(
+              `[whisper] 字幕已完整生成 (${completeness.matchedAudioCount}/${completeness.totalAudioCount})，结束引擎进程`,
+            );
+            if (event.sender && !event.sender.isDestroyed()) {
+              event.sender.send("task-finished", {
+                taskType: "translate",
+                success: true,
+                reason: "completed-after-output",
+                taskId: taskResult?.taskId,
+                wallClockMs: taskResult?.wallClockMs,
+                validation: completeness,
+              });
+            }
+            await activeWhisperStop?.();
+            return;
+          }
+
+          const idleMs = Date.now() - lastActivityAt;
+          if (idleMs < WHISPER_WATCHDOG_TIMEOUT_MS) return;
+
+          logger.error(
+            `[whisper] 引擎 ${Math.floor(WHISPER_WATCHDOG_TIMEOUT_MS / 60000)} 分钟无日志或文件变化，强制终止`,
+          );
+          clearWatchdog();
+          activeWhisperCancelRequested = true;
+          activeWhisperFinished = true;
+          const taskResult = activeWhisperTaskId
+            ? whisperTaskStore.finish(activeWhisperTaskId, WHISPER_TASK_STATES.FAILED, {
+                stage: "watchdog",
+                error: "Whisper 翻译疑似卡死：无日志或文件变化",
+              })
+            : null;
+          activeWhisperTaskId = null;
+          if (event.sender && !event.sender.isDestroyed()) {
+            event.sender.send("task-finished", {
+              taskType: "translate",
+              success: false,
+              reason: "watchdog-timeout",
+              error: "Whisper 翻译疑似卡死：无日志或文件变化",
+              taskId: taskResult?.taskId,
+              wallClockMs: taskResult?.wallClockMs,
+            });
+          }
+          await activeWhisperStop?.();
+        } catch (error) {
+          logger.warn(`[whisper] 进程活动检查失败: ${error?.message || error}`);
+        }
+      }, WHISPER_WATCHDOG_POLL_MS);
+      watchdogTimer.unref?.();
 
       // 5秒后检查进程是否还在运行（用于调试）
       setTimeout(() => {
@@ -555,10 +940,22 @@ export function setupWhisperIPC() {
       }, 5000);
     } catch (err) {
       logger.error("[启动错误] 启动 Python 进程失败: " + err.message);
+      const taskResult = activeWhisperTaskId
+        ? whisperTaskStore.finish(activeWhisperTaskId, WHISPER_TASK_STATES.FAILED, {
+            stage: "spawn",
+            error: err.message,
+          })
+        : null;
+      activeWhisperTaskId = null;
+      activeWhisperFinished = true;
       if (event.sender && !event.sender.isDestroyed()) {
         event.sender.send("task-finished", {
           taskType: "translate",
+          success: false,
+          reason: "spawn-error",
           error: err.message,
+          taskId: taskResult?.taskId,
+          wallClockMs: taskResult?.wallClockMs,
         });
       }
       pythonProcess = null;
@@ -570,34 +967,31 @@ export function setupWhisperIPC() {
     logger.info("收到停止任务请求");
 
     if (pythonProcess) {
-      logger.info("正在停止进程, pid: " + pythonProcess.pid);
+      const processToStop = pythonProcess;
+      logger.info("正在停止进程, pid: " + processToStop.pid);
 
-      // 使用 taskkill 强制杀死进程树（包含子进程）
-      const { spawn } = require("child_process");
-      spawn("taskkill", ["/pid", pythonProcess.pid, "/f", "/t"]);
-
-      pythonProcess = null;
+      activeWhisperCancelRequested = true;
+      activeWhisperFinished = true;
+      const taskResult = activeWhisperTaskId
+        ? whisperTaskStore.finish(
+            activeWhisperTaskId,
+            WHISPER_TASK_STATES.CANCELLED,
+            { stage: "cancelled", error: "用户停止任务" },
+          )
+        : null;
+      activeWhisperTaskId = null;
+      if (event?.sender && !event.sender.isDestroyed()) {
+        event.sender.send("task-finished", {
+          taskType: "translate",
+          success: false,
+          reason: "user-stop",
+          error: "用户停止任务",
+          taskId: taskResult?.taskId,
+          wallClockMs: taskResult?.wallClockMs,
+        });
+      }
+      activeWhisperStop?.();
       logger.info("已发送停止命令");
-
-      // 发送任务结束事件
-      let finishTimeout = setTimeout(() => {
-        if (event && event.sender && !event.sender.isDestroyed()) {
-          event.sender.send("task-finished", {
-            taskType: "translate",
-            success: false,
-            reason: "user-stop",
-            error: "用户停止任务",
-          });
-        }
-      }, 500);
-
-      // 清理timeout
-      event.sender.on("destroyed", () => {
-        if (finishTimeout) {
-          clearTimeout(finishTimeout);
-          finishTimeout = null;
-        }
-      });
     } else {
       logger.info("没有正在运行的进程，无需停止");
     }
@@ -607,6 +1001,14 @@ export function setupWhisperIPC() {
   async function handleZipSubtitles(event, { targetPath, outputDir }) {
     if (!fs.existsSync(targetPath)) {
       return { success: false, msg: "源目录不存在" };
+    }
+
+    try {
+      await fs.promises.access(targetPath, fs.constants.R_OK);
+      const sourceStat = await fs.promises.stat(targetPath);
+      if (!sourceStat.isDirectory()) return { success: false, msg: "源路径不是目录" };
+    } catch (error) {
+      return { success: false, msg: `源目录不可读: ${error.message}` };
     }
 
     // 🟢 确保输出目录存在
@@ -620,15 +1022,44 @@ export function setupWhisperIPC() {
       }
     }
 
+    try {
+      await fs.promises.access(finalOutputDir, fs.constants.W_OK);
+    } catch (error) {
+      return { success: false, msg: `输出目录不可写: ${error.message}` };
+    }
+
+    const packTask = whisperTaskStore.start({
+      kind: "pack",
+      targetPath,
+      metadata: { outputDir: finalOutputDir },
+    });
+    whisperTaskStore.transition(packTask.taskId, WHISPER_TASK_STATES.PACKING);
+    const finishPackTask = (result) => {
+      const state = result?.success
+        ? WHISPER_TASK_STATES.PACKAGED
+        : WHISPER_TASK_STATES.VALIDATION_FAILED;
+      return whisperTaskStore.finish(packTask.taskId, state, {
+        stage: result?.success ? "packaged" : "validation",
+        outputPath: result?.outputPath || null,
+        error: result?.success ? null : result?.msg || "打包/校验失败",
+        validation: result?.validation || null,
+      });
+    };
+
     // 🟢 策略1：如果目标路径本身是RJ号文件夹，直接打包
     const pathMatch = targetPath.match(/(RJ|VJ|BJ)\d+/i);
     if (pathMatch) {
       const rjCode = pathMatch[0].toUpperCase();
+      whisperTaskStore.patch(packTask.taskId, { currentWorkCode: rjCode });
       // 🟢 如果输出目录和源目录相同，需要特殊处理
       if (finalOutputDir === targetPath) {
-        return await packFolderInPlace(event, targetPath, rjCode);
+        const result = await packFolderInPlace(event, targetPath, rjCode);
+        const taskResult = finishPackTask(result);
+        return { ...result, taskId: taskResult?.taskId, wallClockMs: taskResult?.wallClockMs };
       } else {
-        return await packFolder(event, targetPath, rjCode, finalOutputDir);
+        const result = await packFolder(event, targetPath, rjCode, finalOutputDir);
+        const taskResult = finishPackTask(result);
+        return { ...result, taskId: taskResult?.taskId, wallClockMs: taskResult?.wallClockMs };
       }
     }
 
@@ -653,7 +1084,8 @@ export function setupWhisperIPC() {
         const rjCode = folderMatch[0].toUpperCase();
         logger.info(`打包文件夹: ${folderName}`);
         // 🟢 始终打包到 finalOutputDir
-        const result = await packFolder(event, folder, rjCode, finalOutputDir);
+      whisperTaskStore.patch(packTask.taskId, { currentWorkCode: rjCode });
+      const result = await packFolder(event, folder, rjCode, finalOutputDir);
         if (result.skipped) {
           totalSkipped++;
         } else if (result.success) {
@@ -661,7 +1093,14 @@ export function setupWhisperIPC() {
         } else {
           totalFailed++;
         }
-        results.push(`${rjCode}: ${result.msg}`);
+        results.push({
+          rjCode,
+          success: result.success,
+          skipped: Boolean(result.skipped),
+          msg: result.msg,
+          outputPath: result.outputPath || null,
+          validation: result.validation || null,
+        });
       } else {
         // 🟢 没有RJ号：跳过
         logger.info(`跳过文件夹 (无RJ号): ${folderName}`);
@@ -669,19 +1108,23 @@ export function setupWhisperIPC() {
     }
 
     if (totalPacked === 0 && totalSkipped === 0 && totalFailed === 0) {
-      return { success: false, msg: "未找到包含RJ号的文件夹" };
+      const result = { success: false, msg: "未找到包含RJ号的文件夹" };
+      const taskResult = finishPackTask(result);
+      return { ...result, taskId: taskResult?.taskId, wallClockMs: taskResult?.wallClockMs };
     }
 
     const summary = `打包完成: 成功 ${totalPacked} 个，跳过 ${totalSkipped} 个，失败 ${totalFailed} 个`;
     logger.info(summary);
-    return {
-      success: totalPacked > 0 || totalSkipped > 0,
+    const result = {
+      success: totalFailed === 0 && (totalPacked > 0 || totalSkipped > 0),
       msg: summary,
       results,
       totalPacked,
       totalSkipped,
       totalFailed,
     };
+    const taskResult = finishPackTask(result);
+    return { ...result, taskId: taskResult?.taskId, wallClockMs: taskResult?.wallClockMs };
   }
 
   // 🟢 辅助函数：打包单个文件夹到指定输出目录，有更新就覆盖
@@ -770,4 +1213,18 @@ export function setupWhisperIPC() {
       return { success: false, msg: e.message };
     }
   }
+}
+
+export async function stopWhisperTasks() {
+  if (activeWhisperTaskId && whisperTaskStore) {
+    whisperTaskStore.finish(
+      activeWhisperTaskId,
+      WHISPER_TASK_STATES.CANCELLED,
+      { stage: "shutdown", error: "应用退出时停止 Whisper 任务" },
+    );
+    activeWhisperTaskId = null;
+    activeWhisperFinished = true;
+  }
+  await activeWhisperStop?.();
+  activeWhisperStop = null;
 }

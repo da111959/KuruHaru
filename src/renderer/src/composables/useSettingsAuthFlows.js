@@ -1,8 +1,10 @@
 import { tgLogin, tgCheckLogin, tgAuthReply } from "../api/tgApi";
-import { asmrLogin, asmrFetchCloudWorks } from "../api/asmrApi";
+import { asmrLogin, asmrLogout, asmrFetchCloudWorks } from "../api/asmrApi";
 
 export const useSettingsAuthFlows = ({
   config,
+  asmrPasswordInput,
+  asmrPasswordIsSet,
   tgConnected,
   asmrLoggedIn,
   isTgLogging,
@@ -26,11 +28,11 @@ export const useSettingsAuthFlows = ({
           phone: config.tg.phone,
         }),
       );
+      asmrPasswordInput.value = "";
       const res = await tgLogin(loginPayload);
       isTgLogging.value = false;
       if (res.success) {
         tgConnected.value = true;
-        config.tg.session = res.session;
         showToastMessage("Telegram 登录成功");
         // 登录成功后清理待处理验证码，防止重复弹窗
         if (pendingAuthData && pendingAuthData.value) {
@@ -63,27 +65,39 @@ export const useSettingsAuthFlows = ({
 
   const handleAsmrAction = async () => {
     if (asmrLoggedIn.value) {
+      await asmrLogout();
       asmrLoggedIn.value = false;
       config.asmr.token = "";
+      asmrPasswordInput.value = "";
+      asmrPasswordIsSet.value = false;
       showToastMessage("已退出登录");
     } else {
-      if (!config.asmr.username || !config.asmr.password) {
+      if (
+        !config.asmr.username ||
+        (!asmrPasswordInput.value && !asmrPasswordIsSet.value)
+      ) {
         showToastMessage("请输入用户名和密码", "warning");
         return;
       }
       isAsmrLogging.value = true;
-      const loginPayload = JSON.parse(
-        JSON.stringify({
-          username: config.asmr.username,
-          password: config.asmr.password,
-          playlistId: config.asmr.playlistId,
-        }),
-      );
-      const res = await asmrLogin(loginPayload);
-      isAsmrLogging.value = false;
+      const loginPayload = {
+        username: config.asmr.username,
+        ...(asmrPasswordInput.value
+          ? { password: asmrPasswordInput.value }
+          : {}),
+        playlistId: config.asmr.playlistId,
+      };
+      let res;
+      try {
+        res = await asmrLogin(loginPayload);
+      } finally {
+        isAsmrLogging.value = false;
+      }
       if (res.success && res.token) {
         asmrLoggedIn.value = true;
-        config.asmr.token = res.token;
+        asmrPasswordInput.value = "";
+        asmrPasswordIsSet.value = true;
+        config.asmr.token = "";
         showToastMessage("登录成功");
         saveAllSettings();
         // 登录成功后刷新云端列表

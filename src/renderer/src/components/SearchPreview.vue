@@ -1,9 +1,9 @@
 <template>
   <div class="search-preview">
     <div class="preview-header">
-      <span class="label">🔗 搜索预览</span>
-      <button class="copy-btn" :disabled="!hasContent" @click="copyLink">
-        {{ copySuccess ? "✅ 已复制" : "📋 复制链接" }}
+      <span class="label">搜索预览</span>
+      <button type="button" class="copy-btn" :disabled="!hasContent" @click="copyLink">
+        {{ copySuccess ? "已复制" : "复制链接" }}
       </button>
     </div>
     <div class="preview-content">
@@ -17,7 +17,7 @@
         >
       </div>
       <div v-else class="empty-state">
-        <span>👆 设置筛选条件后生成搜索链接</span>
+        <span>设置筛选条件后生成搜索链接</span>
       </div>
     </div>
     <div class="result-count">
@@ -28,6 +28,7 @@
 </template>
 <script setup>
 import { ref, computed, watch } from "vue";
+import { createMessage } from "../utils/ui-feedback";
 import {
   buildSearchSyntaxItems,
   buildSearchUrl,
@@ -36,6 +37,7 @@ import {
 const props = defineProps({
   searchParams: { type: Object, default: () => ({}) },
 });
+const message = createMessage();
 const copySuccess = ref(false);
 // 预览 token 和最终链接都由同一份参数构建，避免“看见的条件”和“复制的链接”不一致。
 const syntaxItems = computed(() => buildSearchSyntaxItems(props.searchParams));
@@ -49,7 +51,7 @@ const copyLink = async () => {
       copySuccess.value = true;
       setTimeout(() => (copySuccess.value = false), 2000);
     } catch {
-      alert("复制失败");
+      message.error("复制失败");
     }
   }
 };
@@ -69,13 +71,9 @@ watch(
 </script>
 <style scoped>
 .search-preview {
-  background: color-mix(
-    in srgb,
-    var(--comp-surface-1) 92%,
-    rgba(255, 253, 245, 0.08) 8%
-  );
+  background: var(--ui-surface);
   border: 1px solid var(--comp-border);
-  border-radius: 16px;
+  border-radius: var(--ui-radius-md);
   padding: 16px;
 }
 .preview-header {
@@ -91,14 +89,10 @@ watch(
 .copy-btn {
   min-height: 36px;
   padding: 8px 14px;
-  border: 1px solid color-mix(in srgb, var(--comp-accent) 56%, transparent);
-  background: linear-gradient(
-    135deg,
-    color-mix(in srgb, var(--comp-accent) 92%, #cbd39c 8%),
-    color-mix(in srgb, var(--comp-accent) 72%, #7f8750 28%)
-  );
-  color: #fffdf4;
-  border-radius: 12px;
+  border: 1px solid var(--ui-action-primary);
+  background: var(--ui-action-primary);
+  color: #fff;
+  border-radius: var(--ui-radius-sm);
   cursor: pointer;
   font-size: 12px;
   font-weight: 700;
@@ -108,13 +102,9 @@ watch(
   cursor: not-allowed;
 }
 .preview-content {
-  background: color-mix(
-    in srgb,
-    var(--comp-control-bg) 82%,
-    rgba(255, 253, 245, 0.1) 18%
-  );
+  background: var(--ui-surface-muted);
   border: 1px solid var(--comp-divider);
-  border-radius: 12px;
+  border-radius: var(--ui-radius-sm);
   padding: 12px;
   min-height: 72px;
 }
@@ -125,7 +115,7 @@ watch(
 }
 .syntax-item {
   padding: 4px 8px;
-  border-radius: 999px;
+  border-radius: var(--ui-radius-sm);
   font-family: monospace;
   font-size: 12px;
   border: 1px solid transparent;
@@ -137,19 +127,17 @@ watch(
 .syntax-item.price,
 .syntax-item.age,
 .syntax-item.duration {
-  background: linear-gradient(
-    135deg,
-    color-mix(in srgb, var(--comp-accent) 92%, #cbd39c 8%),
-    color-mix(in srgb, var(--comp-accent) 72%, #7f8750 28%)
-  );
-  color: #fffdf4;
+  background: color-mix(in srgb, var(--ui-action-primary) 14%, var(--ui-surface-raised));
+  border-color: color-mix(in srgb, var(--ui-action-primary) 40%, var(--ui-border));
+  color: var(--ui-text-primary);
 }
 .syntax-item.tag-exclude,
 .syntax-item.tagw-exclude,
 .syntax-item.lang-exclude,
 .syntax-item.age-exclude {
-  background: color-mix(in srgb, #7e4d4d 78%, #221414 22%);
-  color: #fffdf4;
+  background: color-mix(in srgb, var(--ui-action-danger) 12%, var(--ui-surface-raised));
+  border-color: color-mix(in srgb, var(--ui-action-danger) 38%, var(--ui-border));
+  color: var(--ui-action-danger);
 }
 .empty-state {
   display: flex;
@@ -165,3 +153,6 @@ watch(
   text-align: right;
 }
 </style>
+
+
+

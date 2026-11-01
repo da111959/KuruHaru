@@ -7,9 +7,6 @@
  * 4. 稳定性：修复了下载连接、Entity解析和空指针异常。
  */
 
-import { TelegramClient } from "telegram";
-import { StringSession } from "telegram/sessions";
-import { createSilentGramJsLogger } from "../utils/gramjs-logger";
 import { ipcMain, app } from "electron";
 import fs from "fs";
 import path from "path";
@@ -40,13 +37,13 @@ import { createLogSender } from "../utils/logger";
 const logger = createLogSender("tg-recent-activity");
 
 let telegramClient = null;
-let isConnected = false;
 
 // 缓存：对话列表 (避免重复获取 dialogs)
 let cachedDialogs = null;
 let cachedDialogsTime = 0;
 const DIALOGS_CACHE_TTL = 5 * 60 * 1000; // 5分钟缓存
 const TELEGRAM_REQUEST_TIMEOUT_MS = 60 * 1000;
+let scanPromise = null;
 
 // ==========================================
 // 核心工具函数
@@ -126,45 +123,20 @@ async function withTelegramRequestTimeout(request, operation) {
 }
 
 async function resetTelegramClientAfterTimeout() {
-  const previousClient = telegramClient;
+  // The Telegram client is owned by telegram-login and shared by all domains.
   telegramClient = null;
-  isConnected = false;
   cachedDialogs = null;
   cachedDialogsTime = 0;
-  await previousClient?.disconnect().catch(() => {});
 }
 
 /**
  * 获取连接的客户端 (单例模式，防止重复连接)
  */
 async function getConnectedClient() {
-  const config = getConfig();
-  const { apiId, apiHash, session } = config.tg;
-
-  if (!apiId || !apiHash || !session) {
-    throw new Error(
-      "TG 配置不完整 (API ID, Hash 或 Session 缺失)，请在设置中检查。",
-    );
-  }
-
-  if (!isConnected || !telegramClient) {
-    logger.debug("正在初始化 Telegram 客户端连接...");
-    telegramClient = new TelegramClient(
-      new StringSession(session),
-      Number(apiId),
-      apiHash,
-      {
-        connectionRetries: 2,
-        useWSS: false,
-        baseLogger: createSilentGramJsLogger(),
-      },
-    );
-    // 禁用默认日志输出
-    telegramClient.setLogLevel("none");
-    await telegramClient.connect();
-    isConnected = true;
-    logger.debug("Telegram 客户端已连接");
-  }
+  const { requireConnectedTelegramClient } = await import(
+    "../utils/telegram-login"
+  );
+  telegramClient = await requireConnectedTelegramClient();
   return telegramClient;
 }
 
@@ -183,6 +155,7 @@ async function findLatestAnchorAndFill(_client, options = {}) {
   const tempFiles = [];
   let foundAnchor = null;
   let maxIdScanned = 0;
+  const client = _client || telegramClient;
 
   try {
     const config = getConfig();
@@ -194,10 +167,10 @@ async function findLatestAnchorAndFill(_client, options = {}) {
 
     logger.info(`[初始化] 选用扫描目标: ${chatIdStr}`);
 
-    const entity = await resolveEntity(telegramClient, chatIdStr);
+    const entity = await resolveEntity(client, chatIdStr);
 
     // 使用 iterMessages 进行倒序遍历（从新到旧）
-    const iterator = telegramClient.iterMessages(entity, {
+    const iterator = client.iterMessages(entity, {
       limit: BACKWARD_LIMIT,
     });
 
@@ -325,7 +298,7 @@ async function getNewMessages(_client, discussionId, minId) {
 /**
  * 主逻辑：执行完整的最近活动扫描和保存流程
  */
-export async function scanAndSaveRecentActivity(options = {}) {
+async function performScanAndSaveRecentActivity(options = {}) {
   try {
     const config = getConfig();
     const telegramClient = await getConnectedClient(); // 确保连接
@@ -472,6 +445,16 @@ export async function scanAndSaveRecentActivity(options = {}) {
     logger.error("扫描失败:", error.message);
     return { success: false, error: error.message };
   }
+}
+
+// Home and Recent Activity can request the same scan during startup. Reuse the
+// in-flight operation instead of opening duplicate Telegram requests.
+export async function scanAndSaveRecentActivity(options = {}) {
+  if (scanPromise) return scanPromise;
+  scanPromise = performScanAndSaveRecentActivity(options).finally(() => {
+    scanPromise = null;
+  });
+  return scanPromise;
 }
 
 // ==========================================
@@ -746,11 +729,9 @@ export function setupTgHistoryIPC() {
   const handlers = [
     "tg-scan-recent-activity",
     "tg-read-recent-activity",
-    "get-recent-activity",
     "download-tg-file",
     "download-tg-files",
     "clear-cache",
-    "tg-get-statistics",
     "read-rj-list",
   ];
 
@@ -776,22 +757,6 @@ export function setupTgHistoryIPC() {
   ipcMain.handle("tg-read-recent-activity", () => {
     const config = getConfig();
     return loadRecentActivity(config.paths?.uploadHistoryDir);
-  });
-
-  // 2.1 兼容旧接口：返回扁平 files 结构
-  ipcMain.handle("get-recent-activity", () => {
-    const config = getConfig();
-    const result = loadRecentActivity(config.paths?.uploadHistoryDir);
-
-    if (!result?.success) {
-      return result;
-    }
-
-    return {
-      success: true,
-      files: Array.isArray(result.data?.files) ? result.data.files : [],
-      metadata: result.data?.metadata || {},
-    };
   });
 
   // 3. 下载文件
@@ -863,11 +828,6 @@ export function setupTgHistoryIPC() {
     }
     logger.debug(`[clear-cache] file not found: ${targetPath}`);
     return { success: false, error: "File not found" };
-  });
-
-  // 5. 获取统计 (兼容旧接口)
-  ipcMain.handle("tg-get-statistics", async () => {
-    return { success: true, data: { zipFilesCount: 0 } };
   });
 
   // 6. 读取RJ号列表文件

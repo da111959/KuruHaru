@@ -3,7 +3,7 @@
     <div class="page-header-simple dashboard-header">
       <div class="header-copy">
         <span class="page-eyebrow">System Overview</span>
-        <h2 class="page-title">仪表盘</h2>
+        <h1 class="page-title">仪表盘</h1>
         <p class="page-header-subtitle">
           主系统的上传节奏、最近活动与日常维护入口。
         </p>
@@ -32,9 +32,9 @@
     <div class="stats-grid">
       <div class="stat-card stat-card-emphasis">
         <div class="stat-icon blue">
-          <n-icon :size="22">
+          <span class="stat-icon-glyph" aria-hidden="true">
             <Timer24Regular />
-          </n-icon>
+          </span>
         </div>
         <div class="stat-content full-width">
           <div class="stat-kicker">同步节奏</div>
@@ -52,9 +52,9 @@
 
       <div class="stat-card">
         <div class="stat-icon green">
-          <n-icon :size="22">
+          <span class="stat-icon-glyph" aria-hidden="true">
             <ArrowUpload24Regular />
-          </n-icon>
+          </span>
         </div>
         <div class="stat-content">
           <div class="stat-kicker">工作量</div>
@@ -72,9 +72,9 @@
 
       <div class="stat-card">
         <div class="stat-icon purple">
-          <n-icon :size="22">
+          <span class="stat-icon-glyph" aria-hidden="true">
             <ArrowTrending24Regular />
-          </n-icon>
+          </span>
         </div>
         <div class="stat-content">
           <div class="stat-kicker">今日动态</div>
@@ -92,9 +92,9 @@
 
       <div class="stat-card">
         <div class="stat-icon amber">
-          <n-icon :size="22">
+          <span class="stat-icon-glyph" aria-hidden="true">
             <CalendarLtr24Regular />
-          </n-icon>
+          </span>
         </div>
         <div class="stat-content">
           <div class="stat-kicker">ASMR.one</div>
@@ -112,9 +112,9 @@
 
       <div class="stat-card">
         <div class="stat-icon slate">
-          <n-icon :size="22">
+          <span class="stat-icon-glyph" aria-hidden="true">
             <Timer24Regular />
-          </n-icon>
+          </span>
         </div>
         <div class="stat-content">
           <div class="stat-kicker">缓存节奏</div>
@@ -135,9 +135,9 @@
 
       <div class="stat-card">
         <div class="stat-icon slate">
-          <n-icon :size="22">
+          <span class="stat-icon-glyph" aria-hidden="true">
             <Timer24Regular />
-          </n-icon>
+          </span>
         </div>
         <div class="stat-content">
           <div class="stat-kicker">缓存节奏</div>
@@ -158,9 +158,9 @@
       <div class="card-header history-card-header">
         <div class="section-head-copy">
           <h3 class="section-title">
-            <n-icon class="section-title-icon" :size="18">
+            <span class="section-title-icon">
               <CalendarLtr24Regular />
-            </n-icon>
+            </span>
             <span>ASMR.one 最近更新作品</span>
           </h3>
           <p class="card-caption">
@@ -196,9 +196,9 @@
         </div>
         <div v-else class="empty-state">
           <span class="empty-icon">
-            <n-icon :size="36">
+            <span class="empty-icon-symbol">
               <MailInbox24Regular />
-            </n-icon>
+            </span>
           </span>
           <p>暂无 ASMR.one 热缓存记录</p>
         </div>
@@ -209,7 +209,7 @@
 
 <script setup>
 import { computed } from "vue";
-import { NIcon, useMessage, useDialog } from "naive-ui";
+import { createDialog, createMessage } from "../utils/ui-feedback"
 import {
   ArrowTrending24Regular,
   ArrowUpload24Regular,
@@ -219,8 +219,8 @@ import {
 } from "@vicons/fluent";
 import { useHomePanelWorkflow } from "../composables/useHomePanelWorkflow";
 
-const message = useMessage();
-const dialog = useDialog();
+const message = createMessage();
+const dialog = createDialog();
 
 const {
   daysSinceUpdate,
@@ -366,27 +366,18 @@ const todayUploadsDisplay = computed(() =>
 
 .stat-card {
   min-height: 132px;
-  border-radius: 16px;
+  border-radius: var(--ui-radius-md);
   padding: 18px;
   display: flex;
   align-items: center;
   gap: 16px;
-  border: 1px solid var(--page-surface-border, #d9dee8);
-  background: var(--comp-surface-1, var(--page-panel-bg, #fff));
-  box-shadow: var(--page-shadow-subtle, none);
+  border: 1px solid var(--ui-border);
+  background: var(--ui-surface);
+  box-shadow: none;
 }
 
 .stat-card-emphasis {
-  background: linear-gradient(
-    135deg,
-    color-mix(
-        in srgb,
-        var(--accent, #adb571) 10%,
-        var(--comp-surface-1, #fff) 90%
-      )
-      0%,
-    var(--comp-surface-1, #fff) 100%
-  );
+  background: color-mix(in srgb, var(--ui-action-secondary) 38%, var(--ui-surface));
 }
 
 .stat-icon {
@@ -401,33 +392,42 @@ const todayUploadsDisplay = computed(() =>
 }
 
 .stat-icon.blue {
-  background: color-mix(in srgb, var(--accent, #adb571) 24%, transparent);
-  color: #f0f4cf;
-  border-color: color-mix(in srgb, var(--accent, #adb571) 36%, transparent);
+  background: color-mix(in srgb, var(--ui-action-primary) 16%, var(--ui-surface));
+  color: var(--ui-action-primary);
+  border-color: color-mix(in srgb, var(--ui-action-primary) 36%, var(--ui-border));
 }
 
 .stat-icon.green {
-  background: color-mix(in srgb, #969f5f 20%, transparent);
-  color: #dde4b5;
-  border-color: color-mix(in srgb, #969f5f 32%, transparent);
+  background: color-mix(in srgb, var(--ui-status-success) 12%, var(--ui-surface));
+  color: var(--ui-status-success);
+  border-color: color-mix(in srgb, var(--ui-status-success) 32%, var(--ui-border));
 }
 
 .stat-icon.purple {
-  background: color-mix(in srgb, #b8c17b 18%, transparent);
-  color: #f6f7de;
-  border-color: color-mix(in srgb, #b8c17b 30%, transparent);
+  background: color-mix(in srgb, var(--ui-status-info) 12%, var(--ui-surface));
+  color: var(--ui-status-info);
+  border-color: color-mix(in srgb, var(--ui-status-info) 30%, var(--ui-border));
 }
 
 .stat-icon.amber {
-  background: color-mix(in srgb, #d7bb6d 22%, transparent);
-  color: #fff4d0;
-  border-color: color-mix(in srgb, #d7bb6d 34%, transparent);
+  background: color-mix(in srgb, var(--ui-status-warning) 12%, var(--ui-surface));
+  color: var(--ui-status-warning);
+  border-color: color-mix(in srgb, var(--ui-status-warning) 34%, var(--ui-border));
 }
 
 .stat-icon.slate {
-  background: color-mix(in srgb, #8ca0ba 18%, transparent);
-  color: #eef4ff;
-  border-color: color-mix(in srgb, #8ca0ba 30%, transparent);
+  background: color-mix(in srgb, var(--ui-status-info) 10%, var(--ui-surface));
+  color: var(--ui-status-info);
+  border-color: color-mix(in srgb, var(--ui-status-info) 30%, var(--ui-border));
+}
+
+.stat-icon-glyph,
+.stat-icon-glyph :deep(svg),
+.section-title-icon :deep(svg),
+.empty-icon-symbol :deep(svg) {
+  width: 24px;
+  height: 24px;
+  display: block;
 }
 
 .stat-content {
@@ -642,3 +642,6 @@ const todayUploadsDisplay = computed(() =>
   }
 }
 </style>
+
+
+

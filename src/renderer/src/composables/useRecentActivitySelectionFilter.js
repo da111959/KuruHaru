@@ -6,7 +6,7 @@ import {
   tgReadRjList,
 } from "../api/tgApi";
 
-export const useRecentActivitySelectionFilter = ({ message, dialog }) => {
+export const useRecentActivitySelectionFilter = ({ message }) => {
   const lastScanTime = ref(0);
   const SCAN_DEBOUNCE_MS = 3000; // 3秒防抖
 
@@ -18,6 +18,7 @@ export const useRecentActivitySelectionFilter = ({ message, dialog }) => {
   const excludeRJSet = ref(new Set());
 
   const isScanning = ref(false);
+  const scanError = ref("");
 
   const currentPage = ref(1);
   const pageSize = 30;
@@ -65,6 +66,7 @@ export const useRecentActivitySelectionFilter = ({ message, dialog }) => {
 
   const loadRecentActivity = async () => {
     try {
+      scanError.value = "";
       const result = await tgReadRecentActivity();
       if (
         result &&
@@ -128,45 +130,29 @@ export const useRecentActivitySelectionFilter = ({ message, dialog }) => {
     lastScanTime.value = now;
     isScanning.value = true;
 
-    console.log("显示加载提示");
-    const loadingMessage = message.loading("正在连接 Telegram 扫描文件...", {
-      duration: 0,
-    });
-
     try {
       console.log("🔥 CALLING tgScanRecentActivity FROM RECENT ACTIVITY");
       const result = await tgScanRecentActivity();
       console.log("🔥 RECENT ACTIVITY RESULT:", result);
-
-      loadingMessage.destroy();
 
       if (result && result.success) {
         await loadRecentActivity();
 
         const fileCount = allFiles.value.length;
         console.log("显示成功弹窗，文件数:", fileCount);
-        dialog.success({
-          title: "扫描完成",
-          content: `成功获取到 ${fileCount} 个文件`,
-          positiveText: "确定",
-        });
+        message.success(`扫描完成：成功获取到 ${fileCount} 个文件`);
       } else {
-        console.log("显示失败弹窗");
-        dialog.error({
-          title: "扫描失败",
-          content: result?.error || "未知错误，请检查网络连接或配置",
-          positiveText: "确定",
-        });
+        scanError.value = result?.error || "扫描失败，请重试";
+        message.error(
+          `扫描失败：${result?.error || "未知错误，请检查网络连接或配置"}`,
+        );
       }
     } catch (error) {
-      loadingMessage.destroy();
-
+      scanError.value = error?.message || "扫描过程出错，请重试";
       console.log("显示错误弹窗:", error);
-      dialog.error({
-        title: "扫描出错",
-        content: error?.message || "扫描过程出错，请检查网络或控制台日志",
-        positiveText: "确定",
-      });
+      message.error(
+        `扫描出错：${error?.message || "扫描过程出错，请检查网络或控制台日志"}`,
+      );
     } finally {
       isScanning.value = false;
     }
@@ -249,6 +235,7 @@ export const useRecentActivitySelectionFilter = ({ message, dialog }) => {
     skipFiles,
     excludeFilePath,
     isScanning,
+    scanError,
     currentPage,
     paginatedFiles,
     totalPages,

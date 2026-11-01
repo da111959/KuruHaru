@@ -5,12 +5,11 @@ import {
   asmrWriteChineseList,
   asmrFetchChineseWorks,
   onChineseListProgress,
-  removeChineseListProgressListener,
   asmrGetChineseListPath,
   asmrSetChineseListPath,
 } from "../api/asmrApi";
 
-export const useChineseListWorkflow = () => {
+export const useChineseListWorkflow = ({ message, dialog } = {}) => {
   const txtRJCount = ref(0);
   const tgRJCount = ref(0);
   const apiRJCount = ref(0);
@@ -27,6 +26,27 @@ export const useChineseListWorkflow = () => {
   // 三个来源分开存储，便于统计来源增量；展示总量时再做并集。
 
   const scanProgress = ref({ page: 0, status: "" });
+
+  const notify = (type, content) => {
+    if (message?.[type]) message[type](content);
+    else console.warn(`[chinese-list] ${type}: ${content}`);
+  };
+  const askConfirmation = (content) => {
+    if (!dialog?.warning) {
+      return Promise.resolve(false);
+    }
+    return new Promise((resolve) => {
+      dialog.warning({
+        title: "确认清除数据",
+        content,
+        positiveText: "确认清除",
+        negativeText: "取消",
+        onPositiveClick: () => resolve(true),
+        onNegativeClick: () => resolve(false),
+        onClose: () => resolve(false),
+      });
+    });
+  };
 
   const totalUniqueCount = computed(() => {
     const all = new Set([...txtSet.value, ...tgSet.value, ...apiSet.value]);
@@ -95,7 +115,7 @@ export const useChineseListWorkflow = () => {
     if (files.length > 0) {
       await loadTxtFiles(files);
     } else {
-      alert("请选择TXT文件");
+      notify("warning", "请选择TXT文件");
     }
   };
 
@@ -132,11 +152,11 @@ export const useChineseListWorkflow = () => {
         tgSet.value = new Set([...tgSet.value, ...newCodes]);
         tgRJCount.value = tgSet.value.size;
       } else {
-        alert("读取TG数据失败或无数据");
+        notify("error", "读取TG数据失败或无数据");
       }
     } catch (e) {
       console.error("读取TG数据失败:", e);
-      alert("读取TG数据失败");
+      notify("error", "读取TG数据失败");
     } finally {
       isLoadingTg.value = false;
     }
@@ -151,7 +171,7 @@ export const useChineseListWorkflow = () => {
     const progressHandler = (progress) => {
       scanProgress.value = progress;
     };
-    onChineseListProgress(progressHandler);
+    const unsubscribeProgress = onChineseListProgress(progressHandler);
 
     try {
       const result = await asmrFetchChineseWorks();
@@ -176,18 +196,18 @@ export const useChineseListWorkflow = () => {
         apiRJCount.value = apiSet.value.size;
         cacheStatus.value = `✓ 扫描完成，新增 ${newCodes.length} 个`;
       } else {
-        alert(`API扫描失败: ${result?.error || "未知错误"}`);
+        notify("error", `API扫描失败: ${result?.error || "未知错误"}`);
         cacheStatus.value = "";
       }
     } catch (e) {
       console.error("API扫描失败:", e);
-      alert("API扫描过程出错");
+      notify("error", "API扫描过程出错");
       cacheStatus.value = "";
     } finally {
       isScanningApi.value = false;
       scanProgress.value = {};
       // 进度监听必须在 finally 清理，避免多次扫描后监听器叠加。
-      removeChineseListProgressListener(progressHandler);
+      unsubscribeProgress?.();
     }
   };
 
@@ -205,8 +225,11 @@ export const useChineseListWorkflow = () => {
     URL.revokeObjectURL(url);
   };
 
-  const clearAll = () => {
-    if (confirm("确定要清除所有数据吗？")) {
+  const clearAll = async () => {
+    const confirmed = await askConfirmation(
+      `将清除 TXT、TG、API 共 ${totalUniqueCount.value} 个编号，是否继续？`,
+    );
+    if (confirmed) {
       txtSet.value = new Set();
       tgSet.value = new Set();
       apiSet.value = new Set();

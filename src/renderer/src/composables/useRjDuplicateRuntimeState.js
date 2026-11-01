@@ -5,6 +5,8 @@ const createInitialStatistics = () => ({
   duplicateRJs: 0,
   messagesToDelete: 0,
   deletedCount: 0,
+  partialFailure: false,
+  failedCount: 0,
 });
 
 export const useRjDuplicateRuntimeState = () => {
@@ -12,6 +14,7 @@ export const useRjDuplicateRuntimeState = () => {
   const isScanning = ref(false);
   const isDeleting = ref(false);
   const scanResults = ref([]);
+  const scanSnapshotId = ref("");
   const hasScanned = ref(false);
   const scanProgress = ref(0);
   const scanProgressText = ref("");
@@ -23,6 +26,7 @@ export const useRjDuplicateRuntimeState = () => {
     isScanning,
     isDeleting,
     scanResults,
+    scanSnapshotId,
     hasScanned,
     scanProgress,
     scanProgressText,

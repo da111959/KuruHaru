@@ -1,7 +1,7 @@
 <template>
   <div class="language-selector">
     <div class="selector-header">
-      <span class="label">🌐 语言筛选</span>
+      <span class="label">语言筛选</span>
       <span class="hint">(支持 $lang: / $-lang:)</span>
     </div>
 
@@ -25,7 +25,7 @@
     </div>
 
     <div class="search-box">
-      <span class="search-icon">🔍</span>
+      <span class="search-icon" aria-hidden="true">⌕</span>
       <input
         v-model="searchText"
         type="text"
@@ -53,8 +53,8 @@
           @change="toggleLanguage(item.code)"
         />
         <span class="lang-meta">
-          <span class="lang-token">{{ getDisplayToken(item.code) }}</span>
-          <span class="lang-desc">{{ item.region }} {{ item.name }}</span>
+          <span class="lang-token">{{ item.code }}</span>
+          <span class="lang-desc"><span class="lang-region">{{ item.region }}</span>{{ item.name }}</span>
         </span>
       </label>
 
@@ -68,7 +68,7 @@
       class="selected-langs"
     >
       <div class="selected-header">
-        <span class="header-text">📋 已选:</span>
+        <span class="header-text">已选:</span>
         <button class="clear-all-btn" @click="clearAll">清除</button>
       </div>
 
@@ -113,7 +113,6 @@ const {
   excludedLangs,
   searchPlaceholder,
   filteredLanguages,
-  getDisplayToken,
   isLanguageSelected,
   toggleLanguage,
   clearAll,
@@ -130,7 +129,7 @@ const {
     rgba(255, 253, 245, 0.08) 8%
   );
   border: 1px solid var(--comp-border);
-  border-radius: 16px;
+  border-radius: var(--ui-radius-md, 10px);
   padding: 16px;
   color: var(--comp-text);
 }
@@ -148,7 +147,7 @@ const {
   font-size: 12px;
   color: var(--comp-muted);
 }
-.mode-selector {
+.mode-toggle {
   display: flex;
   gap: 10px;
   margin-bottom: 12px;
@@ -156,7 +155,7 @@ const {
 .mode-btn {
   min-height: 34px;
   padding: 8px 14px;
-  border-radius: 999px;
+  border-radius: var(--ui-radius-sm, 6px);
   border: 1px solid var(--comp-control-border);
   background: color-mix(
     in srgb,
@@ -168,13 +167,9 @@ const {
   transition: all 0.18s ease;
 }
 .mode-btn.active {
-  background: linear-gradient(
-    135deg,
-    color-mix(in srgb, var(--comp-accent) 92%, #cbd39c 8%),
-    color-mix(in srgb, var(--comp-accent) 72%, #7f8750 28%)
-  );
+  background: var(--ui-action-secondary, var(--comp-control-bg));
   border-color: color-mix(in srgb, var(--comp-accent) 58%, transparent);
-  color: #fffdf4;
+  color: var(--comp-text);
 }
 .search-box {
   display: flex;
@@ -187,7 +182,7 @@ const {
     rgba(255, 253, 245, 0.08) 8%
   );
   border: 1px solid var(--comp-control-border);
-  border-radius: 12px;
+  border-radius: var(--ui-radius-sm, 6px);
   margin-bottom: 12px;
 }
 .search-box input {
@@ -218,7 +213,7 @@ const {
     rgba(255, 253, 245, 0.1) 24%
   );
   border: 1px solid var(--comp-divider);
-  border-radius: 12px;
+  border-radius: var(--ui-radius-sm, 6px);
   padding: 12px;
 }
 .langs-grid {
@@ -227,18 +222,19 @@ const {
   gap: 8px;
 }
 .lang-item {
-  display: inline-flex;
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
   align-items: center;
-  gap: 6px;
-  min-height: 34px;
-  padding: 6px 12px;
+  gap: 9px;
+  min-height: 58px;
+  padding: 8px 11px;
   background: color-mix(
     in srgb,
     var(--comp-control-bg) 88%,
     rgba(255, 253, 245, 0.08) 8%
   );
   border: 1px solid var(--comp-control-border);
-  border-radius: 999px;
+  border-radius: var(--ui-radius-sm, 6px);
   cursor: pointer;
   color: var(--comp-text);
   transition: all 0.18s ease;
@@ -252,19 +248,22 @@ const {
   border-color: color-mix(in srgb, var(--comp-accent) 30%, transparent);
 }
 .lang-item.selected.include {
-  background: linear-gradient(
-    135deg,
-    color-mix(in srgb, var(--comp-accent) 92%, #cbd39c 8%),
-    color-mix(in srgb, var(--comp-accent) 72%, #7f8750 28%)
-  );
-  border-color: color-mix(in srgb, var(--comp-accent) 58%, transparent);
-  color: #fffdf4;
+  background: color-mix(in srgb, var(--comp-accent) 12%, var(--comp-control-bg));
+  border-color: var(--comp-accent);
+  color: var(--comp-text);
 }
 .lang-item.selected.exclude {
-  background: color-mix(in srgb, #7e4d4d 78%, #221414 22%);
-  border-color: color-mix(in srgb, #c98b8b 42%, transparent);
-  color: #fffdf4;
+  background: color-mix(in srgb, var(--ui-action-danger, #b42318) 8%, var(--comp-control-bg));
+  border-color: var(--ui-action-danger, #b42318);
+  color: var(--ui-action-danger, #b42318);
 }
+.lang-item input { margin: 0; accent-color: var(--comp-accent); }
+.lang-meta { display: flex; min-width: 0; flex-direction: column; align-items: flex-start; gap: 2px; }
+.lang-token { padding: 1px 5px; border: 1px solid var(--comp-divider); border-radius: 4px; background: var(--comp-control-bg); color: var(--comp-text); font: 650 11px/1.35 "Cascadia Mono", Consolas, monospace; }
+.lang-desc { display: flex; min-width: 0; align-items: center; gap: 6px; color: var(--comp-muted); font-size: 13px; }
+.lang-region { color: var(--comp-accent); font-size: 10px; font-weight: 750; letter-spacing: .04em; }
+.language-selector .lang-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; max-height: 340px; overflow: auto; padding: 1px 4px 1px 1px; }
+.language-selector .lang-list .empty-state { grid-column: 1 / -1; }
 .lang-count {
   font-size: 11px;
   color: inherit;
@@ -278,7 +277,7 @@ const {
     rgba(255, 253, 245, 0.1) 18%
   );
   border: 1px solid var(--comp-divider);
-  border-radius: 12px;
+  border-radius: var(--ui-radius-sm, 6px);
   padding: 12px;
 }
 .selected-header {
@@ -309,21 +308,19 @@ const {
   gap: 4px;
   min-height: 28px;
   padding: 4px 10px;
-  border-radius: 999px;
+  border-radius: var(--ui-radius-sm, 6px);
   font-size: 12px;
   font-weight: 700;
 }
 .lang-badge.include {
-  background: linear-gradient(
-    135deg,
-    color-mix(in srgb, var(--comp-accent) 92%, #cbd39c 8%),
-    color-mix(in srgb, var(--comp-accent) 72%, #7f8750 28%)
-  );
-  color: #fffdf4;
+  background: color-mix(in srgb, var(--comp-accent) 12%, var(--comp-control-bg));
+  color: var(--comp-text);
+  border: 1px solid color-mix(in srgb, var(--comp-accent) 35%, var(--comp-control-border));
 }
 .lang-badge.exclude {
-  background: color-mix(in srgb, #7e4d4d 78%, #221414 22%);
-  color: #fffdf4;
+  background: color-mix(in srgb, var(--ui-action-danger, #b42318) 8%, var(--comp-control-bg));
+  color: var(--ui-action-danger, #b42318);
+  border: 1px solid color-mix(in srgb, var(--ui-action-danger, #b42318) 42%, transparent);
 }
 .lang-badge button {
   border: none;

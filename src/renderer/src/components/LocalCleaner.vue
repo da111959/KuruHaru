@@ -1,14 +1,15 @@
 <template>
   <div class="page-container local-cleaner-theme">
     <div class="page-header">
-      <h2 class="page-title">本地清理</h2>
+      <h1 class="page-title">本地清理</h1>
+      <p class="page-header-subtitle">先扫描或导入候选，再确认选择范围后执行本地或云端删除。</p>
     </div>
 
     <div class="action-bar">
-      <button class="btn-secondary" :disabled="isBusy" @click="scanFolder">
-        扫描文件夹
+        <button class="btn-secondary" :disabled="isBusy" :aria-busy="isBusy" @click="scanFolder">
+        {{ isBusy ? "处理中..." : "扫描文件夹" }}
       </button>
-      <button class="btn-secondary" :disabled="isBusy" @click="loadFromTxt">
+      <button class="btn-secondary" :disabled="isBusy" :aria-busy="isBusy" @click="loadFromTxt">
         从TXT导入
       </button>
       <button
@@ -26,7 +27,7 @@
           :disabled="selectedPaths.length === 0"
           @click="executeDelete"
         >
-          云端删除 ({{ selectedPaths.length }})
+          云端删除已选 ({{ selectedPaths.length }})
         </button>
         <div class="select-actions">
           <button class="btn-secondary small" @click="selectAll">全选</button>
@@ -38,10 +39,10 @@
     </div>
 
     <!-- TXT导入的云端删除列表 -->
-    <div v-if="txtRJCodes.length > 0" class="txt-panel card">
+    <div v-if="txtRJCodes.length > 0" class="txt-panel card" aria-live="polite">
       <div class="txt-header">
-        <span class="txt-title"
-          >📄 TXT导入 - 云端删除 ({{ txtRJCodes.length }})</span
+          <span class="txt-title"
+          >TXT 导入 - 云端删除 ({{ txtRJCodes.length }})</span
         >
         <div class="txt-actions">
           <button class="btn-secondary small" @click="copyRJCodes">复制</button>
@@ -63,23 +64,32 @@
 
     <!-- 本地文件列表 -->
     <div class="file-list card">
-      <div
+        <div
         v-for="item in localItems"
         :key="item.path"
         class="file-row"
         :class="{ selected: selectedPaths.includes(item.path) }"
         @click="toggleSelect(item.path)"
+          @keydown.enter.prevent="toggleSelect(item.path)"
+          @keydown.space.prevent="toggleSelect(item.path)"
+          role="button"
+          tabindex="0"
+          :aria-pressed="selectedPaths.includes(item.path)"
       >
-        <input
-          type="checkbox"
-          :checked="selectedPaths.includes(item.path)"
-          readonly
-        />
+          <input
+            :id="`local-item-${item.path}`"
+            type="checkbox"
+            :checked="selectedPaths.includes(item.path)"
+            :aria-label="`选择 ${item.code || item.name || '文件'}`"
+            @click.stop
+            @keydown.stop
+            @change="toggleSelect(item.path)"
+          />
         <span class="code">{{ item.code || "?" }}</span>
         <span class="name">{{ item.name }}</span>
         <span class="size">{{ formatSize(item.size) }}</span>
       </div>
-      <div v-if="localItems.length === 0" class="empty">
+      <div v-if="localItems.length === 0" class="empty" role="status">
         点击"扫描文件夹"选择要清理的目录，或"从TXT导入"删除云端数据
       </div>
     </div>
@@ -87,8 +97,11 @@
 </template>
 
 <script setup>
+import { createDialog, createMessage } from "../utils/ui-feedback";
 import { useLocalCleaner } from "../composables/useLocalCleaner";
 
+const dialog = createDialog();
+const message = createMessage();
 const {
   localItems,
   selectedPaths,
@@ -104,7 +117,7 @@ const {
   formatSize,
   executeDelete,
   executeCloudDelete,
-} = useLocalCleaner();
+} = useLocalCleaner({ dialog, message });
 </script>
 
 <style scoped>
@@ -119,15 +132,16 @@ const {
 
 .page-header {
   padding: 16px 20px;
-  background: #fff;
-  border-radius: 12px;
+  background: var(--ui-surface);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-md);
 }
 
 .page-title {
   margin: 0;
   font-size: 20px;
   font-weight: 600;
-  color: #26251f;
+  color: var(--ui-text-primary);
 }
 
 .action-bar {
@@ -222,18 +236,18 @@ const {
 
 .btn-secondary {
   padding: 12px 20px;
-  border-radius: 8px;
-  border: none;
+  border-radius: var(--ui-radius-sm);
+  border: 1px solid var(--ui-border);
   cursor: pointer;
-  color: #66614f;
+  color: var(--ui-text-primary);
   font-size: 14px;
   font-weight: 500;
   transition: all 0.2s ease;
-  background: #f2ede0;
+  background: var(--ui-action-secondary);
 }
 
 .btn-secondary:hover:not(:disabled) {
-  background: #d8d0bb;
+  background: color-mix(in srgb, var(--ui-action-secondary) 72%, var(--ui-action-primary) 28%);
 }
 
 .btn-secondary:disabled {
@@ -243,18 +257,18 @@ const {
 
 .btn-primary {
   padding: 12px 20px;
-  border-radius: 8px;
-  border: none;
+  border-radius: var(--ui-radius-sm);
+  border: 1px solid var(--ui-action-primary);
   cursor: pointer;
   color: #fff;
   font-size: 14px;
   font-weight: 500;
   transition: all 0.2s ease;
-  background: #adb571;
+  background: var(--ui-action-primary);
 }
 
 .btn-primary:hover:not(:disabled) {
-  background: #0d5da3;
+  background: var(--ui-action-primary-hover);
 }
 
 .btn-primary:disabled {
@@ -274,12 +288,12 @@ const {
 }
 
 .card {
-  background: #fff;
-  border-radius: 12px;
+  background: var(--ui-surface);
+  border-radius: var(--ui-radius-md);
   padding: 12px;
   flex: 1;
   overflow-y: auto;
-  border: 1px solid #d8d0bb;
+  border: 1px solid var(--ui-border);
 }
 
 .file-list {
@@ -299,22 +313,23 @@ const {
 }
 
 .file-row:hover {
-  background: #f7f2e8;
+  background: var(--ui-action-secondary);
 }
 
 .file-row.selected {
-  background: #e8f1fa;
+  background: color-mix(in srgb, var(--ui-action-primary) 14%, var(--ui-surface));
+  border: 1px solid color-mix(in srgb, var(--ui-action-primary) 40%, var(--ui-border));
 }
 
 .file-row input[type="checkbox"] {
   width: 18px;
   height: 18px;
-  accent-color: #adb571;
+  accent-color: var(--ui-action-primary, #176b61);
 }
 
 .code {
-  background: #e8f1fa;
-  color: #0d5da3;
+  background: color-mix(in srgb, var(--ui-status-info) 12%, var(--ui-surface));
+  color: var(--ui-status-info);
   padding: 4px 10px;
   border-radius: 6px;
   font-size: 13px;
@@ -323,7 +338,7 @@ const {
 }
 
 .name {
-  color: #26251f;
+  color: var(--ui-text-primary);
   font-size: 14px;
   flex: 1;
   overflow: hidden;
@@ -332,14 +347,14 @@ const {
 }
 
 .size {
-  color: #86806f;
+  color: var(--ui-text-secondary);
   font-size: 13px;
   font-family: monospace;
 }
 
 .empty {
   text-align: center;
-  color: #a3a3a3;
+  color: var(--ui-text-secondary);
   padding: 60px 20px;
   font-size: 14px;
 }
@@ -360,7 +375,7 @@ const {
 .txt-title {
   font-size: 14px;
   font-weight: 500;
-  color: #66614f;
+  color: var(--ui-text-secondary);
 }
 
 .txt-actions {
@@ -377,8 +392,8 @@ const {
 }
 
 .rj-tag {
-  background: #e8f1fa;
-  color: #0d5da3;
+  background: color-mix(in srgb, var(--ui-status-info) 12%, var(--ui-surface));
+  color: var(--ui-status-info);
   padding: 4px 10px;
   border-radius: 6px;
   font-size: 13px;
@@ -403,3 +418,5 @@ const {
   background: #d4d4d4;
 }
 </style>
+
+

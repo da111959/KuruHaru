@@ -1,10 +1,10 @@
 import { ref, computed, onMounted, onUnmounted } from "vue";
 import {
   asmrFetchCloudWorks,
-  asmrDeleteWorks,
+  asmrCloudDeletePreview,
+  asmrCloudDeleteExecute,
   asmrGetCachedCloudWorks,
   onCloudWorksUpdated,
-  removeCloudWorksUpdatedListeners,
 } from "../api/asmrApi";
 import { saveFile } from "../api/dialogApi";
 import { writeFile } from "../api/localApi";
@@ -15,14 +15,41 @@ import {
   getCloudTagSearchTerms,
 } from "../utils/cloudTagUtils";
 
-export const useCloudCleaner = () => {
+export const useCloudCleaner = ({ message, dialog } = {}) => {
   const cloudWorks = ref([]);
   const selectedCloudWorks = ref([]);
   const isBusy = ref(false);
+  const pendingDeletePreview = ref(null);
+  let disposeCloudWorksUpdated = null;
   const searchText = ref("");
   const selectedTags = ref([]);
   const tagMode = ref("OR");
   const tgRJCodes = ref([]);
+
+  const notify = (type, content) => {
+    if (message?.[type]) {
+      message[type](content);
+    } else {
+      console.warn(`[cloud-cleaner] ${type}: ${content}`);
+    }
+  };
+
+  const askConfirmation = (content) => {
+    if (!dialog?.warning) {
+      return Promise.resolve(false);
+    }
+    return new Promise((resolve) => {
+      dialog.warning({
+        title: "请确认操作",
+        content,
+        positiveText: "确认",
+        negativeText: "取消",
+        onPositiveClick: () => resolve(true),
+        onNegativeClick: () => resolve(false),
+        onClose: () => resolve(false),
+      });
+    });
+  };
 
   const uploadButtonText = computed(() => {
     if (tgRJCodes.value.length === 0) {
@@ -57,32 +84,36 @@ export const useCloudCleaner = () => {
   };
 
   const checkRecentUpload = async () => {
-    const res = await tgReadRecentActivity();
-    if (res.success && res.data?.files) {
-      // 提取所有 RJ 号
-      tgRJCodes.value = res.data.files
-        .map((f) => f.rjCode || f.id)
-        .filter(Boolean);
+    if (isBusy.value) return;
+    isBusy.value = true;
+    try {
+      const res = await tgReadRecentActivity();
+      if (res.success && res.data?.files) {
+        tgRJCodes.value = res.data.files
+          .map((f) => f.rjCode || f.id)
+          .filter(Boolean);
 
-      const overlap = countOverlap();
-      if (overlap > 0) {
-        // 自动勾选重合的作品（基于数字部分匹配）
-        const overlapIds = cloudWorks.value
-          .filter((w) => {
-            const cloudNumber = extractNumberPart(w.source_id);
-            return (
-              cloudNumber &&
-              tgRJCodes.value.some(
-                (code) => extractNumberPart(code) === cloudNumber,
-              )
-            );
-          })
-          .map((w) => w.id);
-        selectedCloudWorks.value = overlapIds;
-        alert(`发现 ${overlap} 条重合，已自动勾选`);
-      } else {
-        alert("无重合数据");
+        const overlap = countOverlap();
+        if (overlap > 0) {
+          const overlapIds = cloudWorks.value
+            .filter((w) => {
+              const cloudNumber = extractNumberPart(w.source_id);
+              return (
+                cloudNumber &&
+                tgRJCodes.value.some(
+                  (code) => extractNumberPart(code) === cloudNumber,
+                )
+              );
+            })
+            .map((w) => w.id);
+          selectedCloudWorks.value = overlapIds;
+          notify("success", `发现 ${overlap} 条重合，已自动勾选`);
+        } else {
+          notify("info", "无重合数据");
+        }
       }
+    } finally {
+      isBusy.value = false;
     }
   };
 
@@ -183,7 +214,7 @@ export const useCloudCleaner = () => {
 
   const exportDisplayedRjCodes = async () => {
     if (!exportableRjCodes.value.length) {
-      alert("当前列表暂无可导出的RJ号");
+      notify("warning", "当前列表暂无可导出的RJ号");
       return;
     }
 
@@ -206,9 +237,9 @@ export const useCloudCleaner = () => {
         throw new Error(writeResult?.error || "写入失败");
       }
 
-      alert(`已导出 ${exportableRjCodes.value.length} 个RJ号`);
+      notify("success", `已导出 ${exportableRjCodes.value.length} 个RJ号`);
     } catch (error) {
-      alert(`导出失败: ${error.message}`);
+      notify("error", `导出失败: ${error.message}`);
     }
   };
 
@@ -227,26 +258,45 @@ export const useCloudCleaner = () => {
   };
 
   const fetchCloudWorks = async () => {
+    if (isBusy.value) return;
     isBusy.value = true;
-    await asmrFetchCloudWorks();
-    isBusy.value = false;
+    try {
+      await asmrFetchCloudWorks();
+    } finally {
+      isBusy.value = false;
+    }
   };
 
   const deleteSelected = async () => {
-    if (!confirm(`删除 ${selectedCloudWorks.value.length} 个？`)) return;
-    const res = await asmrDeleteWorks(Array.from(selectedCloudWorks.value));
-    if (res.success) {
-      cloudWorks.value = cloudWorks.value.filter(
-        (w) => !selectedCloudWorks.value.includes(w.id),
-      );
-      selectedCloudWorks.value = [];
-      alert(`删除 ${res.deletedCount} 个`);
+    if (isBusy.value || selectedCloudWorks.value.length === 0) return;
+    if (!(await askConfirmation(`先生成 ${selectedCloudWorks.value.length} 个云端作品的删除预览？`))) return;
+    isBusy.value = true;
+    try {
+      const selectedIds = Array.from(selectedCloudWorks.value);
+      const preview = await asmrCloudDeletePreview({ kind: "works", workIds: selectedIds });
+      if (!preview?.success) {
+        notify("error", preview?.error || "无法生成删除预览");
+        return;
+      }
+      pendingDeletePreview.value = preview.preview;
+      if (!(await askConfirmation(`预览 ${preview.preview.id} 已生成，确认执行快照中的 ${preview.preview.workIds.length} 个作品？`))) return;
+      const res = await asmrCloudDeleteExecute(preview.preview.id);
+      if (res.success) {
+        cloudWorks.value = cloudWorks.value.filter((w) => !selectedIds.includes(w.id));
+        selectedCloudWorks.value = [];
+        pendingDeletePreview.value = null;
+        notify("success", `删除 ${res.deletedCount} 个`);
+      } else {
+        notify("error", res.error || "删除失败，可根据审计结果重试失败项");
+      }
+    } finally {
+      isBusy.value = false;
     }
   };
 
   onMounted(async () => {
     // 监听云端数据实时更新
-    onCloudWorksUpdated((res) => {
+    disposeCloudWorksUpdated = onCloudWorksUpdated((res) => {
       if (res.data) {
         cloudWorks.value = res.data;
       }
@@ -258,7 +308,9 @@ export const useCloudCleaner = () => {
   });
 
   onUnmounted(() => {
-    removeCloudWorksUpdatedListeners();
+    if (typeof disposeCloudWorksUpdated === "function") {
+      disposeCloudWorksUpdated();
+    }
   });
 
   return {
@@ -283,5 +335,6 @@ export const useCloudCleaner = () => {
     clearSelection,
     fetchCloudWorks,
     deleteSelected,
+    pendingDeletePreview,
   };
 };

@@ -5,18 +5,39 @@
 
 import { TelegramClient } from "telegram";
 import { StringSession } from "telegram/sessions";
+import crypto from "node:crypto";
 import { createSilentGramJsLogger } from "./gramjs-logger";
-import { ipcMain } from "electron";
+import { registerIpcHandler, registerIpcListener } from "../ipc/registry";
 import path from "path";
 import { getConfig, saveConfig } from "../modules/config";
+import {
+  clearTelegramSession,
+  getTelegramCredentials,
+} from "../domains/asmr/credential-store.js";
 import { syncSearchHistoryFromUploadRecords } from "../modules/tg-search-bot";
+import { normalizeTelegramPhone } from "./telegram-phone";
+import {
+  createUploadIdempotencyKey,
+  isUploadConfirmed,
+  isUploadUncertain,
+  loadUploadState,
+  listUploadHistory,
+  markUploadConfirmed,
+  markUploadStarted,
+  markUploadUncertain,
+  saveUploadState,
+} from "./upload-state";
 
 // --- 全局状态 ---
 let client = null;
 let uploadCancelled = false;
+let uploadRunning = false;
 let currentState = "disconnected";
 let isLogining = false;
 let currentAuthReject = null;
+let currentAuthReply = null;
+const uploadOperations = new Map();
+let autoConnectPromise = null;
 
 const logger = {
   info: (...args) => console.info("[TG-INFO]", ...args),
@@ -63,8 +84,16 @@ async function disposeClient(reason = "") {
   client = null;
 }
 
+export async function disconnectTelegram(reason = "") {
+  await disposeClient(reason);
+  currentState = "disconnected";
+  isLogining = false;
+  currentAuthReject = null;
+}
+
 async function resetSessionAfterDupAuthKey(reason = "") {
   const cfg = getConfig();
+  clearTelegramSession();
   const didSave = await saveConfig({
     tg: { ...cfg.tg, session: "" },
     paths: cfg.paths,
@@ -210,7 +239,12 @@ export async function requireConnectedTelegramClient() {
     return currentClient;
   }
 
-  const autoConnectResult = await tryAutoConnect();
+  if (!autoConnectPromise) {
+    autoConnectPromise = tryAutoConnect().finally(() => {
+      autoConnectPromise = null;
+    });
+  }
+  const autoConnectResult = await autoConnectPromise;
   const connectedClient = getConnectedTelegramClient();
   if (
     autoConnectResult.connected &&
@@ -233,26 +267,32 @@ export async function requireConnectedTelegramClient() {
 /**
  * 单个文件串行处理核心
  */
-async function processSerialUpload(file, channelId, index, total, event) {
+async function processSerialUpload(file, channelId, index, total, event, isCancelled = () => false) {
   const fileName = path.basename(file.path);
   const filenameNoExt = path.parse(fileName).name;
   const matchedCode = (
     String(file?.code || filenameNoExt).match(/(?:RJ|VJ|BJ)\d{6,8}/i)?.[0] || ""
   ).toUpperCase();
   const checkCancel = () => {
-    if (uploadCancelled) throw new Error("CANCELLED");
+    if (isCancelled() || uploadCancelled) throw new Error("CANCELLED");
   };
 
-  // 1. 发送索引标题
+  // Keep the index title outside the retry loop; each retry only retries the
+  // failed file send, preserving the original title/file pair semantics.
   checkCancel();
-  const txtMsg = await client.sendMessage(channelId, {
-    message: filenameNoExt,
-  });
-
-  // 2. 关键等待：给 Bot 反应时间，确保视觉连续 (3.5秒)
+  let txtMsg;
+  try {
+    txtMsg = await client.sendMessage(channelId, {
+      message: filenameNoExt,
+    });
+  } catch (error) {
+    error.uploadUncertain = true;
+    throw error;
+  }
   await new Promise((r) => setTimeout(r, 3500));
 
-  // 3. 上传文件
+  // A stable per-file/channel key lets interrupted batches resume without
+  // repeating uploads that Telegram already confirmed.
   let retryCount = 0;
   while (retryCount < 3) {
     checkCancel();
@@ -277,15 +317,19 @@ async function processSerialUpload(file, channelId, index, total, event) {
         path: file.path,
         name: fileName,
         title: filenameNoExt,
+        channelId: String(channelId),
+        idempotencyKey: createUploadIdempotencyKey({ file, channelId }),
         titleMessageId: Number(txtMsg?.id || 0) || null,
         fileMessageId: Number(uploadedMessage?.id || 0) || null,
       };
     } catch (e) {
-      if (e.message.includes("MSG_ID_INVALID")) {
+      if (e?.message?.includes("MSG_ID_INVALID") && retryCount < 2) {
         retryCount++;
         await new Promise((r) => setTimeout(r, 4000));
         continue;
       }
+      e.uploadUncertain = true;
+      e.titleMessageId = Number(txtMsg?.id || 0) || null;
       throw e;
     }
   }
@@ -295,25 +339,46 @@ async function processSerialUpload(file, channelId, index, total, event) {
  * IPC 注册中心 (在一个 setup 函数里搞定所有监听)
  */
 export function setupTelegramIPC() {
+  registerIpcListener("tg-auth-reply", (_event, result) => {
+    currentAuthReply?.(result);
+  });
+
   // --- 1. 状态与登录监听 ---
-  ipcMain.handle("tg-check-login", async () => {
+  registerIpcHandler("tg-check-login", async () => {
     const result = await tryAutoConnect();
     return result.connected;
   });
 
-  ipcMain.handle("tg-get-status", () => ({
+  registerIpcHandler("tg-get-status", () => ({
     state: currentState,
     connected: !!(client && client.connected),
   }));
 
-  ipcMain.handle("tg-login", async (event, payload = {}) => {
+  registerIpcHandler("tg-read-upload-history", () => {
+    const config = getConfig();
+    return {
+      success: true,
+      records: listUploadHistory(config.paths?.uploadHistoryDir),
+    };
+  });
+
+  registerIpcHandler("tg-login", async (event, payload = {}) => {
     const cfg = getConfig();
     if (isLogining) return { success: false, error: "正在登录中" };
 
+    const storedCredentials = getTelegramCredentials();
     const nextTgConfig = {
       ...(cfg.tg || {}),
+      ...storedCredentials,
       ...(payload || {}),
     };
+    for (const key of ["apiHash", "session", "botToken"]) {
+      if (!String(payload?.[key] || "").trim()) {
+        nextTgConfig[key] = storedCredentials[key] || cfg.tg?.[key] || "";
+      }
+    }
+
+    nextTgConfig.phone = normalizeTelegramPhone(nextTgConfig.phone);
 
     if (!nextTgConfig.apiId || !nextTgConfig.apiHash || !nextTgConfig.phone) {
       return {
@@ -322,7 +387,15 @@ export function setupTelegramIPC() {
       };
     }
 
+    if (!/^\+\d{7,15}$/.test(nextTgConfig.phone)) {
+      return {
+        success: false,
+        error: "手机号格式无效，请填写国际格式，例如 +8613812345678",
+      };
+    }
+
     isLogining = true;
+    let lastAuthError = null;
     try {
       await disposeClient("tg-login-start");
       client = await getOrInitClient({
@@ -333,22 +406,32 @@ export function setupTelegramIPC() {
       });
       await client.connect();
 
-      const createAuthCallback = (type) =>
+      const createAuthCallback = (type, delivery = "") =>
         new Promise((resolve, reject) => {
           currentAuthReject = reject;
-          const handleReply = (_, result) => {
-            ipcMain.removeListener("tg-auth-reply", handleReply);
+          currentAuthReply = (result = {}) => {
+            currentAuthReply = null;
+            currentAuthReject = null;
             if (result?.cancel) reject(new Error("USER_CANCEL"));
             else resolve(result.code);
           };
-          ipcMain.once("tg-auth-reply", handleReply);
-          event.sender.send("tg-auth-needed", { type, timeout: 180000 });
+          event.sender.send("tg-auth-needed", {
+            type,
+            delivery,
+            timeout: 180000,
+          });
         });
 
       await client.start({
         phoneNumber: nextTgConfig.phone,
-        phoneCode: () => createAuthCallback("Code"),
+        phoneCode: (isCodeViaApp) =>
+          createAuthCallback("Code", isCodeViaApp ? "app" : "phone"),
         password: () => createAuthCallback("Password"),
+        onError: async (error) => {
+          lastAuthError = error;
+          logger.error("Telegram 认证请求失败:", getErrorMessage(error));
+          return true;
+        },
       });
 
       const sessionStr = client.session.save();
@@ -357,7 +440,7 @@ export function setupTelegramIPC() {
         paths: cfg.paths,
       });
       currentState = "connected";
-      return { success: true, session: sessionStr };
+      return { success: true };
     } catch (error) {
       const duplicated = await handleAuthKeyDuplicated(error, "tg-login");
       if (duplicated) {
@@ -372,30 +455,84 @@ export function setupTelegramIPC() {
       }
 
       await disposeClient("tg-login-failed");
-      const errorMessage = getErrorMessage(error);
+      const errorMessage = getErrorMessage(
+        error?.message === "AUTH_USER_CANCEL" && lastAuthError
+          ? lastAuthError
+          : error,
+      );
+      logger.error("Telegram 登录失败:", errorMessage);
       currentState =
         errorMessage === "USER_CANCEL" ? "cancelled" : "auth_failed";
       return { success: false, error: errorMessage };
     } finally {
       isLogining = false;
       currentAuthReject = null;
+      currentAuthReply = null;
     }
   });
 
-  ipcMain.handle("tg-cancel-auth", () => {
-    if (currentAuthReject) currentAuthReject(new Error("USER_CANCEL"));
+  registerIpcHandler("tg-cancel-auth", () => {
+    if (currentAuthReject) {
+      currentAuthReject(new Error("USER_CANCEL"));
+    } else if (isLogining) {
+      // The login can be between connect() and the first auth callback. In
+      // that window there is no reject function yet, so tear down the client
+      // to make the in-flight start() reject and release isLogining in finally.
+      void disposeClient("tg-login-cancelled");
+      currentState = "cancelled";
+    }
     return { success: true };
   });
 
   // --- 2. 上传与控制监听 ---
-  ipcMain.handle("tg-cancel-upload", () => {
-    uploadCancelled = true;
-    return { success: true };
+  registerIpcHandler("tg-cancel-upload", (_event, payload = {}) => {
+    const operationId = String(payload?.operationId || "");
+    if (operationId) {
+      const operation = uploadOperations.get(operationId);
+      if (operation) operation.cancelled = true;
+    } else {
+      uploadCancelled = true;
+    }
+    return { success: true, operationId: operationId || null };
   });
 
-  ipcMain.on("tg-upload-files", async (event, { files, channelId }) => {
-    const uploadFiles = Array.isArray(files) ? files : [];
+  registerIpcListener(
+    "tg-upload-files",
+    async (event, { files, channelId, allowUncertainRetry = false, operationId: requestedOperationId } = {}) => {
+      const operationId = String(requestedOperationId || crypto.randomUUID());
+      const operation = { operationId, cancelled: false };
+      uploadOperations.set(operationId, operation);
+      const sender = event.sender;
+      event = {
+        ...event,
+        sender: {
+          send: (channel, payload) =>
+            sender.send(channel, { ...(payload || {}), operationId }),
+        },
+      };
+      if (uploadRunning) {
+        event.sender.send("log-update", {
+          type: "tg",
+          msg: "已有上传任务正在运行，请等待完成或取消后再启动。",
+        });
+        uploadOperations.delete(operationId);
+        return;
+      }
+      uploadRunning = true;
+      const uploadFiles = Array.isArray(files) ? files : [];
     const totalFiles = uploadFiles.length;
+    const config = getConfig();
+    const uploadStateDirectory = config.paths?.uploadHistoryDir;
+    let uploadState = loadUploadState(uploadStateDirectory);
+    for (const [key, record] of Object.entries(uploadState.records)) {
+      if (record?.status === "started") {
+        uploadState = markUploadUncertain(uploadState, key, {
+          ...record,
+          reason: "interrupted-before-confirmation",
+        });
+      }
+    }
+    saveUploadState(uploadStateDirectory, uploadState);
     uploadCancelled = false;
     let successCount = 0;
     let failCount = 0;
@@ -424,15 +561,67 @@ export function setupTelegramIPC() {
 
       // 串行循环
       for (let i = 0; i < totalFiles; i++) {
-        if (uploadCancelled) break;
+        if (uploadCancelled || operation.cancelled) break;
+        const file = uploadFiles[i];
+        const idempotencyKey = createUploadIdempotencyKey({
+          file,
+          channelId: String(channelId || ""),
+        });
+        if (isUploadConfirmed(uploadState, idempotencyKey)) {
+          successCount++;
+          event.sender.send("log-update", {
+            type: "tg",
+            msg: `⏭️ 已确认上传，跳过 [${i + 1}/${totalFiles}] ${path.basename(file.path)}`,
+          });
+          continue;
+        }
+        if (isUploadUncertain(uploadState, idempotencyKey)) {
+          if (!allowUncertainRetry) {
+            failCount++;
+            event.sender.send("log-update", {
+              type: "tg",
+              msg: `⚠️ 上次上传结果未确认，需先人工检查 Telegram 频道后再重试 [${i + 1}/${totalFiles}] ${path.basename(file.path)}`,
+            });
+            continue;
+          }
+        }
         try {
+          uploadState = markUploadStarted(uploadState, idempotencyKey, {
+            channelId: String(channelId || ""),
+            path: file?.path || "",
+            name: path.basename(file?.path || ""),
+            code: file?.code || "",
+            attemptCount: Number(uploadState.records?.[idempotencyKey]?.attemptCount || 0) + 1,
+          });
+          const startedSave = saveUploadState(uploadStateDirectory, uploadState);
+          if (!startedSave.success) {
+            throw new Error(`无法保存上传恢复状态，已取消发送: ${startedSave.error}`);
+          }
           const uploadRecord = await processSerialUpload(
-            uploadFiles[i],
+            file,
             peerId,
             i,
             totalFiles,
             event,
+            () => operation.cancelled,
           );
+          const titleMessageId = Number(uploadRecord?.titleMessageId || 0) || null;
+          const fileMessageId = Number(uploadRecord?.fileMessageId || 0) || null;
+          if (!fileMessageId) {
+            throw new Error("Telegram 未返回已上传文件的消息 ID，无法确认成功");
+          }
+          uploadState = markUploadConfirmed(uploadState, idempotencyKey, {
+            ...uploadRecord,
+            titleMessageId,
+            fileMessageId,
+          });
+          const persistence = saveUploadState(uploadStateDirectory, uploadState);
+          if (!persistence.success) {
+            event.sender.send("log-update", {
+              type: "tg",
+              msg: `⚠️ 上传已成功，但恢复记录保存失败: ${persistence.error}`,
+            });
+          }
           successCount++;
           if (uploadRecord && typeof uploadRecord === "object") {
             uploadedRecords.push(uploadRecord);
@@ -445,6 +634,21 @@ export function setupTelegramIPC() {
         } catch (err) {
           if (err.message === "CANCELLED") throw err;
           failCount++;
+          if (err?.uploadUncertain) {
+            uploadState = markUploadUncertain(uploadState, idempotencyKey, {
+              titleMessageId: err.titleMessageId || null,
+              error: getErrorMessage(err),
+              reason: "telegram-send-result-unknown",
+            });
+          } else {
+            uploadState.records[idempotencyKey] = {
+              ...(uploadState.records[idempotencyKey] || {}),
+              status: "failed",
+              failedAt: new Date().toISOString(),
+              error: getErrorMessage(err),
+            };
+          }
+          saveUploadState(uploadStateDirectory, uploadState);
           event.sender.send("log-update", {
             type: "tg",
             msg: `❌ 失败: ${path.basename(uploadFiles[i].path)} | ${err.message}`,
@@ -454,7 +658,7 @@ export function setupTelegramIPC() {
 
       event.sender.send("log-update", {
         type: "tg",
-        msg: uploadCancelled
+        msg: uploadCancelled || operation.cancelled
           ? "🛑 任务已手动中断"
           : `🎉 全部完成 | 成功: ${successCount} | 失败: ${failCount}`,
       });
@@ -483,14 +687,10 @@ export function setupTelegramIPC() {
         }
       }
 
-      event.sender.send("tg-upload-finished", {
-        success: !uploadCancelled && failCount === 0,
-        cancelled: uploadCancelled,
-        successCount,
-        failCount,
-        total: totalFiles,
-      });
       uploadCancelled = false;
-    }
-  });
+      uploadRunning = false;
+      uploadOperations.delete(operationId);
+      }
+    },
+  );
 }

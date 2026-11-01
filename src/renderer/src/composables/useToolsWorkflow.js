@@ -9,7 +9,23 @@ import {
   zipSubtitles,
 } from "../api/toolsApi";
 
-export const useToolsWorkflow = () => {
+export const useToolsWorkflow = ({ dialog } = {}) => {
+  const askConfirmation = (content) => {
+    if (!dialog?.warning) {
+      return false;
+    }
+    return new Promise((resolve) =>
+      dialog.warning({
+        title: "请确认删除",
+        content,
+        positiveText: "继续",
+        negativeText: "取消",
+        onPositiveClick: () => resolve(true),
+        onNegativeClick: () => resolve(false),
+        onClose: () => resolve(false),
+      }),
+    );
+  };
   const getDirectoryPath = (rawPath) => {
     const normalizedPath = String(rawPath || "").trim();
     if (!normalizedPath) {
@@ -37,7 +53,7 @@ export const useToolsWorkflow = () => {
   };
 
   // 提取文件名功能
-  const sourceDir = ref("");
+  const sourceFile = ref("");
   const outputPath = ref("");
   const outputFileName = ref("filelist.txt");
   const isProcessing = ref(false);
@@ -50,6 +66,9 @@ export const useToolsWorkflow = () => {
   const cleanResult = ref("");
   const deletedCodes = ref([]);
   const shouldDeleteFiles = ref(false); // 是否实际删除文件
+  const cleanDataSnapshotId = ref("");
+  const cleanDataSnapshotPaths = ref("");
+  const cleanDataHasFailures = ref(false);
 
   // 最近上传本地清理
   const recentUploadArchiveDir = ref("");
@@ -58,6 +77,9 @@ export const useToolsWorkflow = () => {
   const isCleaningRecentUploaded = ref(false);
   const recentUploadCleanupResult = ref("");
   const recentUploadCleanupDetails = ref("");
+  const recentUploadCleanupSnapshotId = ref("");
+  const recentUploadCleanupSnapshotDirs = ref("");
+  const recentUploadCleanupHasFailures = ref(false);
 
   // 字幕格式互转
   const subtitleConvertSourcePath = ref("");
@@ -89,12 +111,17 @@ export const useToolsWorkflow = () => {
   });
 
   // 提取文件名相关
-  const selectSourceDir = async () => {
-    const res = await openDirectory();
+  const selectSourceFile = async () => {
+    const res = await openFile({
+      type: "file",
+      multiSelections: false,
+      approveParentDirectory: true,
+      filters: [{ name: "ZIP", extensions: ["zip"] }],
+    });
     if (res && res.filePath) {
-      sourceDir.value = res.filePath;
+      sourceFile.value = res.filePath;
       if (!outputPath.value) {
-        outputPath.value = res.filePath;
+        outputPath.value = getDirectoryPath(res.filePath);
       }
     }
   };
@@ -107,15 +134,15 @@ export const useToolsWorkflow = () => {
   };
 
   const extractFileNames = async () => {
-    if (!sourceDir.value) return;
+    if (!sourceFile.value) return;
 
     isProcessing.value = true;
     extractResult.value = "";
 
     try {
       const res = await runExtractFileNames({
-        sourceDir: sourceDir.value,
-        outputDir: outputPath.value || sourceDir.value,
+        sourceFile: sourceFile.value,
+        outputDir: outputPath.value || getDirectoryPath(sourceFile.value),
         fileName: outputFileName.value || "filelist.txt",
       });
 
@@ -123,8 +150,7 @@ export const useToolsWorkflow = () => {
         extractResult.value = `✅ 完成！${res.fileCount} 个文件名已写入 ${res.outputPath}`;
         // 保存源目录和输出路径到配置文件夹下的 config.json
         await saveCustomPaths({
-          sourceDir: sourceDir.value,
-          toolOutputDir: outputPath.value || sourceDir.value,
+          toolOutputDir: outputPath.value || getDirectoryPath(sourceFile.value),
         });
       } else {
         extractResult.value = `❌ 失败: ${res.msg}`;
@@ -157,6 +183,20 @@ export const useToolsWorkflow = () => {
   const cleanData = async () => {
     if (!mainFile.value || !compareDir.value) return;
 
+    const requestedPaths = JSON.stringify([mainFile.value, compareDir.value]);
+    if (requestedPaths !== cleanDataSnapshotPaths.value) {
+      cleanDataSnapshotId.value = "";
+      cleanDataHasFailures.value = false;
+    }
+    const shouldExecute =
+      shouldDeleteFiles.value === true && Boolean(cleanDataSnapshotId.value);
+    if (
+      shouldExecute &&
+      !(await askConfirmation("将只删除上一次预览快照中的 ZIP 文件。该操作不可撤销，确认继续？"))
+    ) {
+      return;
+    }
+
     isCleaning.value = true;
     cleanResult.value = "";
     deletedCodes.value = [];
@@ -172,15 +212,38 @@ export const useToolsWorkflow = () => {
       const res = await runCleanData({
         mainFile: mainFile.value,
         compareDir: compareDir.value,
-        deleteFiles: shouldDeleteFiles.value === true, // 确保是布尔值
+        deleteFiles: shouldExecute,
+        snapshotId: shouldExecute ? cleanDataSnapshotId.value : null,
       });
 
       console.log("[cleanData] 收到响应:", res);
 
       if (res.success) {
+        if (res.actuallyDeleted) {
+          if (res.failedEntries?.length) {
+            cleanDataSnapshotId.value = res.snapshotId || "";
+            cleanDataHasFailures.value = true;
+          } else {
+            cleanDataSnapshotId.value = "";
+            cleanDataSnapshotPaths.value = "";
+            cleanDataHasFailures.value = false;
+          }
+        } else {
+          cleanDataSnapshotId.value = res.snapshotId || "";
+          cleanDataSnapshotPaths.value = requestedPaths;
+          cleanDataHasFailures.value = false;
+        }
         const actionText = res.actuallyDeleted ? "已删除" : "预览";
-        cleanResult.value = `✅ ${actionText}完成！扫描 ${res.zipFileCount} 个zip文件，发现 ${res.deletedCount} 个重复文件，保留 ${res.cleanedCount} 个`;
+        cleanResult.value = `✅ ${actionText}完成！扫描 ${res.zipFileCount} 个zip文件，发现 ${res.deletedCount} 个重复文件，保留 ${res.cleanedCount} 个` +
+          (res.failedEntries?.length ? `；失败 ${res.failedEntries.length} 项，可重试` : "") +
+          (!res.actuallyDeleted && shouldDeleteFiles.value ? "；快照已冻结，再次点击将执行删除" : "");
         deletedCodes.value = res.deletedCodes || [];
+        if (res.failedEntries?.length) {
+          cleanResult.value += `\n${res.failedEntries.map((entry) => `${entry.path} :: ${entry.error}`).join("\n")}`;
+        }
+        if (res.retryFailures && !res.failedEntries?.length) {
+          cleanResult.value += "\n失败项重试已完成。";
+        }
       } else {
         cleanResult.value = `❌ 失败: ${res.msg}`;
       }
@@ -223,8 +286,16 @@ export const useToolsWorkflow = () => {
         if (result.results && result.results.length > 0) {
           summary += "\n\n详细结果:\n";
           result.results.forEach((item, index) => {
-            summary += `${index + 1}. ${item}\n`;
+            if (typeof item === "string") {
+              summary += `${index + 1}. ${item}\n`;
+              return;
+            }
+            const status = item.success ? (item.skipped ? "跳过" : "成功") : "失败";
+            summary += `${index + 1}. ${item.rjCode || "任务"} ${status}: ${item.msg || ""}\n`;
           });
+        }
+        if (Number.isFinite(result.wallClockMs)) {
+          summary += `\n耗时: ${Math.floor(result.wallClockMs / 1000)} 秒`;
         }
         return summary;
       };
@@ -260,8 +331,28 @@ export const useToolsWorkflow = () => {
     }
   };
 
-  const cleanRecentUploadedSubtitles = async () => {
+  const cleanRecentUploadedSubtitles = async ({ retryFailures = false } = {}) => {
     if (!recentUploadArchiveDir.value || !recentUploadSubtitleDir.value) return;
+
+    const requestedDirs = JSON.stringify([
+      recentUploadArchiveDir.value,
+      recentUploadSubtitleDir.value,
+    ]);
+    if (requestedDirs !== recentUploadCleanupSnapshotDirs.value) {
+      recentUploadCleanupSnapshotId.value = "";
+      recentUploadCleanupHasFailures.value = false;
+    }
+    const shouldExecute =
+      (shouldDeleteRecentUploadedFiles.value === true || retryFailures) &&
+      Boolean(recentUploadCleanupSnapshotId.value);
+    if (
+      shouldExecute &&
+      !(await askConfirmation(
+        "将只删除上一次预览快照中的对象。该操作不可撤销，确认继续？",
+      ))
+    ) {
+      return;
+    }
 
     isCleaningRecentUploaded.value = true;
     recentUploadCleanupResult.value = "";
@@ -271,14 +362,34 @@ export const useToolsWorkflow = () => {
       const res = await runCleanRecentUploadedSubtitles({
         archiveDir: recentUploadArchiveDir.value,
         subtitleDir: recentUploadSubtitleDir.value,
-        deleteFiles: shouldDeleteRecentUploadedFiles.value === true,
+        deleteFiles: shouldExecute,
+        snapshotId: shouldExecute ? recentUploadCleanupSnapshotId.value : null,
+        retryFailures: retryFailures === true,
       });
 
-      if (res.success) {
+      if (res.success || res.actuallyDeleted) {
+        if (res.actuallyDeleted) {
+          if (res.failedEntries?.length > 0) {
+            recentUploadCleanupSnapshotId.value = res.snapshotId || "";
+            recentUploadCleanupSnapshotDirs.value = requestedDirs;
+          } else {
+            recentUploadCleanupSnapshotId.value = "";
+            recentUploadCleanupSnapshotDirs.value = "";
+          }
+          recentUploadCleanupHasFailures.value =
+            (res.failedEntries?.length || 0) > 0;
+        } else {
+          recentUploadCleanupSnapshotId.value = res.snapshotId || "";
+          recentUploadCleanupSnapshotDirs.value = requestedDirs;
+          recentUploadCleanupHasFailures.value = false;
+        }
         const actionText = res.actuallyDeleted ? "已删除" : "预览";
         recentUploadCleanupResult.value =
           `✅ ${actionText}完成！最近上传 ${res.recentFileCount} 条，` +
-          `匹配压缩包 ${res.matchedArchiveCount} 个，匹配文件夹 ${res.matchedFolderCount} 个`;
+          `匹配压缩包 ${res.matchedArchiveCount} 个，匹配文件夹 ${res.matchedFolderCount} 个` +
+          (res.failedEntries?.length
+            ? `；失败 ${res.failedEntries.length} 项，可重试失败项`
+            : "");
 
         const details = [];
         details.push(`扫描压缩包目录文件数: ${res.scannedArchiveCount}`);
@@ -290,14 +401,22 @@ export const useToolsWorkflow = () => {
         details.push("");
         details.push("匹配到的压缩包:");
         if (res.archiveMatches?.length > 0) {
-          res.archiveMatches.forEach((item) => details.push(`- ${item.path}`));
+          res.archiveMatches.forEach((item) =>
+            details.push(
+              `- ${item.path} | 编号: ${item.matchedCodes?.join(", ") || "名称匹配"} | 原因: ${item.reason || item.matchSource}`,
+            ),
+          );
         } else {
           details.push("- (无)");
         }
         details.push("");
         details.push("匹配到的文件夹:");
         if (res.folderMatches?.length > 0) {
-          res.folderMatches.forEach((item) => details.push(`- ${item.path}`));
+          res.folderMatches.forEach((item) =>
+            details.push(
+              `- ${item.path} | 编号: ${item.matchedCodes?.join(", ") || "名称匹配"} | 原因: ${item.reason || item.matchSource}`,
+            ),
+          );
         } else {
           details.push("- (无)");
         }
@@ -310,7 +429,24 @@ export const useToolsWorkflow = () => {
           );
         }
 
+        if (res.retryFailures) {
+          details.push("");
+          details.push("失败项重试列表:");
+          if (res.retryableEntries?.length > 0) {
+            res.retryableEntries.forEach((item) =>
+              details.push(`- [${item.type}] ${item.path} :: ${item.error}`),
+            );
+          } else {
+            details.push("- (本次失败项已处理，无剩余失败)");
+          }
+        }
+
         recentUploadCleanupDetails.value = details.join("\n");
+
+        if (!res.actuallyDeleted && shouldDeleteRecentUploadedFiles.value) {
+          recentUploadCleanupResult.value +=
+            "；快照已冻结，再次点击将执行删除";
+        }
 
         await saveCustomPaths({
           toolOutputDir: recentUploadArchiveDir.value,
@@ -419,7 +555,7 @@ export const useToolsWorkflow = () => {
   };
 
   return {
-    sourceDir,
+    sourceFile,
     outputPath,
     outputFileName,
     isProcessing,
@@ -430,12 +566,18 @@ export const useToolsWorkflow = () => {
     cleanResult,
     deletedCodes,
     shouldDeleteFiles,
+    cleanDataSnapshotId,
+    cleanDataHasFailures,
     recentUploadArchiveDir,
     recentUploadSubtitleDir,
     shouldDeleteRecentUploadedFiles,
     isCleaningRecentUploaded,
     recentUploadCleanupResult,
     recentUploadCleanupDetails,
+    recentUploadCleanupSnapshotId,
+    recentUploadCleanupHasFailures,
+    retryRecentUploadedCleanupFailures: () =>
+      cleanRecentUploadedSubtitles({ retryFailures: true }),
     subtitleConvertSourcePath,
     subtitleConvertOutputPath,
     subtitleConvertTargetFormat,
@@ -446,12 +588,41 @@ export const useToolsWorkflow = () => {
     zipOutputPath,
     isZipping,
     zipResult,
-    selectSourceDir,
+    selectSourceFile,
     selectOutputPath,
     extractFileNames,
     selectMainFile,
     selectCompareDir,
     cleanData,
+    retryCleanDataFailures: async () => {
+      if (!mainFile.value || !compareDir.value || !cleanDataSnapshotId.value) return;
+      isCleaning.value = true;
+      try {
+        const res = await runCleanData({
+          mainFile: mainFile.value,
+          compareDir: compareDir.value,
+          deleteFiles: true,
+          snapshotId: cleanDataSnapshotId.value,
+          retryFailures: true,
+        });
+        if (res.actuallyDeleted) {
+          cleanDataHasFailures.value = (res.failedEntries?.length || 0) > 0;
+          if (!cleanDataHasFailures.value) {
+            cleanDataSnapshotId.value = "";
+            cleanDataSnapshotPaths.value = "";
+          }
+          cleanResult.value = res.failedEntries?.length
+            ? `仍有 ${res.failedEntries.length} 项失败：\n${res.failedEntries.map((entry) => `${entry.path} :: ${entry.error}`).join("\n")}`
+            : `✅ 失败项重试完成，删除 ${res.deletedCount} 个 ZIP 文件`;
+        } else {
+          cleanResult.value = `❌ 重试失败：${res.msg || "未知错误"}`;
+        }
+      } catch (error) {
+        cleanResult.value = `❌ 重试失败：${error.message}`;
+      } finally {
+        isCleaning.value = false;
+      }
+    },
     selectRecentUploadArchiveDir,
     selectRecentUploadSubtitleDir,
     cleanRecentUploadedSubtitles,

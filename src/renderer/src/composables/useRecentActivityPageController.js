@@ -6,11 +6,12 @@ import {
   formatRecentActivitySize,
 } from "./useRecentActivityFormatters";
 
-export const useRecentActivityPageController = ({ message, dialog }) => {
-  const selectionState = useRecentActivitySelectionFilter({ message, dialog });
+export const useRecentActivityPageController = ({ message }) => {
+  const selectionState = useRecentActivitySelectionFilter({ message });
 
   const downloadState = useRecentActivityDownload({
     selectedFiles: selectionState.selectedFiles,
+    message,
   });
 
   onMounted(() => {

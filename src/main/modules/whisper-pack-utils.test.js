@@ -40,6 +40,19 @@ describe("whisper-pack-utils", () => {
     );
   });
 
+  it("拒绝不对应任何音频的孤立字幕", () => {
+    const report = buildSubtitleCompletenessReport({
+      audioFiles: [{ relativePath: "track01.mp3" }],
+      subtitleFiles: [
+        { relativePath: "track01.srt" },
+        { relativePath: "old-track.srt" },
+      ],
+    });
+
+    expect(report.isComplete).toBe(false);
+    expect(report.unmatchedSubtitleFiles).toEqual(["old-track.srt"]);
+  });
+
   it("无音频文件时跳过完整性校验", () => {
     const report = buildSubtitleCompletenessReport({
       audioFiles: [],

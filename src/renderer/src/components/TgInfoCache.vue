@@ -1,120 +1,89 @@
 <template>
   <div class="tg-info-cache tg-search-bot-theme">
-    <n-card title="TG 作品信息缓存" :bordered="false" class="bot-card">
-      <n-space vertical :size="16">
-        <div class="bot-meta">
-          <div class="meta-item">
-            缓存文件：{{ statusResult?.cacheFilePath || "未生成" }}
-          </div>
-          <div class="meta-item">
-            文件状态：{{ statusResult?.exists ? "存在" : "不存在" }}，记录数：{{
-              statusResult?.records || 0
-            }}
-          </div>
-          <div class="meta-item">
-            文件大小：{{ formatBytes(statusResult?.fileSize || 0) }}
-          </div>
-          <div class="meta-item">
-            大小上限：{{ formatBytes(statusResult?.maxFileSizeBytes || 0) }}（{{
-              statusResult?.maxFileSizeMB || 0
-            }}
-            MB）
-          </div>
-          <div class="meta-item">
-            热缓存：{{ hotCacheEnabledText }}，模式：{{ hotCacheModeText }}
-          </div>
-          <div class="meta-item">
-            上次缓存检查：{{ hotCacheLastCheckedLabel }}
-          </div>
-          <div class="meta-item">
-            One 最近检测到更新：{{ hotCacheLastChangedLabel }}
-          </div>
-          <div class="meta-item">
-            One 持续未更新：{{ hotCacheStaleDurationLabel }}
-          </div>
-          <div class="meta-item">
-            最近同步结果：{{ hotCacheLastResultText }}
-          </div>
+    <header class="page-header">
+      <div>
+        <p class="page-eyebrow">Telegram 工具</p>
+        <h1 class="page-title">作品信息缓存</h1>
+        <p class="page-header-subtitle">查看缓存新鲜度，或从 TXT 构建作品信息缓存 JSON。</p>
+      </div>
+    </header>
+    <section class="bot-card workbench-section status-section" aria-labelledby="cache-status-title">
+      <div class="section-header">
+        <div>
+          <h2 id="cache-status-title" class="section-title">缓存状态</h2>
+          <p class="section-caption">保留可用的旧缓存，并明确显示新鲜度和最近构建结果。</p>
+          <p class="section-summary">缓存文件、热缓存和最近同步结果集中显示。</p>
+        </div>
+        <button class="btn-secondary" :aria-busy="isRefreshing" :disabled="isRefreshing || isBuilding" @click="refreshStatus">
+          <ArrowSync24Regular class="button-icon" aria-hidden="true" />
+          刷新状态
+        </button>
+      </div>
+      <div class="cache-content-stack">
+        <div class="bot-meta status-details">
+          <div class="meta-item"><span>缓存文件</span><strong>{{ statusResult?.cacheFilePath || "未生成" }}</strong></div>
+          <div class="meta-item"><span>文件状态</span><strong>{{ statusResult?.exists ? "存在" : "不存在" }} · {{ statusResult?.records || 0 }} 条记录</strong></div>
+          <div class="meta-item"><span>文件大小</span><strong>{{ formatBytes(statusResult?.fileSize || 0) }}</strong></div>
+          <div class="meta-item"><span>大小上限</span><strong>{{ formatBytes(statusResult?.maxFileSizeBytes || 0) }}（{{ statusResult?.maxFileSizeMB || 0 }} MB）</strong></div>
+          <div class="meta-item"><span>热缓存</span><strong>{{ hotCacheEnabledText }} · {{ hotCacheModeText }}</strong></div>
+          <div class="meta-item"><span>上次检查</span><strong>{{ hotCacheLastCheckedLabel }}</strong></div>
+          <div class="meta-item"><span>最近更新</span><strong>{{ hotCacheLastChangedLabel }}</strong></div>
+          <div class="meta-item"><span>持续未更新</span><strong>{{ hotCacheStaleDurationLabel }}</strong></div>
+          <div class="meta-item"><span>最近同步</span><strong>{{ hotCacheLastResultText }}</strong></div>
         </div>
 
-        <div class="control-buttons">
-          <n-button
-            type="default"
-            :loading="isRefreshing"
-            :disabled="isBuilding"
-            @click="refreshStatus"
-          >
-            <template #icon>
-              <SyncOutlined />
-            </template>
-            刷新缓存状态
-          </n-button>
-        </div>
-
-        <div class="search-section">
+        <div class="search-section cache-build-section">
+          <h2 class="section-title">从 TXT 构建</h2>
           <div class="concurrency-row">
-            <span class="recent-label">并发抓取数：</span>
-            <n-input-number
-              v-model:value="buildConcurrency"
+            <label class="field-label" for="cache-build-concurrency">并发抓取数</label>
+            <input type="number"
+              id="cache-build-concurrency"
+              v-model="buildConcurrency"
               :min="1"
               :max="20"
-              :precision="0"
-              size="small"
+
             />
           </div>
-          <div class="search-input-group">
-            <n-input
-              v-model:value="inputFilePath"
-              :bordered="false"
+          <div class="build-field">
+            <label class="field-label" for="cache-txt-path">TXT 文件</label>
+            <input
+              id="cache-txt-path"
+              v-model="inputFilePath"
               placeholder="点击“选择TXT”后自动填入路径"
               class="search-input"
               @keyup.enter="buildCacheFromTxt"
             />
-            <n-button
-              type="default"
-              text
-              :bordered="false"
-              @click="pickTxtFile"
-            >
-              <template #icon>
-                <FolderOpenOutlined />
-              </template>
+            <div class="build-actions">
+              <button type="button" class="btn-secondary" @click="pickTxtFile">
+              <FolderOpen24Regular class="button-icon" aria-hidden="true" />
               选择TXT
-            </n-button>
-            <n-button
-              type="warning"
-              text
-              :bordered="false"
-              :loading="isBuilding"
-              @click="buildCacheFromTxt"
-            >
-              <template #icon>
-                <SyncOutlined />
-              </template>
-              从 TXT 构建缓存
-            </n-button>
+              </button>
+              <button type="button" class="btn-primary" :aria-busy="isBuilding" :disabled="isBuilding" @click="buildCacheFromTxt">
+                <ArrowSync24Regular class="button-icon" aria-hidden="true" />
+                从 TXT 构建缓存
+              </button>
+            </div>
           </div>
           <div v-if="recentTxtPaths.length" class="recent-paths">
             <span class="recent-label">最近路径：</span>
-            <n-button
+              <button type="button"
               v-for="path in recentTxtPaths"
               :key="path"
-              size="tiny"
-              quaternary
               class="recent-path-btn"
               @click="useRecentPath(path)"
             >
               {{ path }}
-            </n-button>
+            </button>
           </div>
         </div>
 
         <div v-if="buildResult" class="sync-result">
-          <n-card title="构建结果" size="small" :bordered="false">
+          <section aria-labelledby="cache-build-result-title">
+            <h3 id="cache-build-result-title" class="sr-only">构建结果</h3>
             <div v-if="buildResult.success" class="success-result">
-              <n-icon size="20">
-                <CheckCircleOutlined />
-              </n-icon>
+              <span>
+                <CheckmarkCircle24Regular class="result-state-icon" aria-hidden="true" />
+              </span>
               <div class="result-content">
                 <div class="result-message">{{ buildResult.message }}</div>
                 <div class="result-message">
@@ -141,20 +110,21 @@
               </div>
             </div>
             <div v-else class="error-result">
-              <n-icon size="20">
-                <ExclamationCircleOutlined />
-              </n-icon>
+              <span>
+                <ErrorCircle24Regular class="result-state-icon" aria-hidden="true" />
+              </span>
               <div class="result-content">
                 <div class="result-message">
                   {{ buildResult.error || buildResult.message || "构建失败" }}
                 </div>
               </div>
             </div>
-          </n-card>
+          </section>
         </div>
 
         <div class="usage-section">
-          <n-card title="说明" size="small" :bordered="false">
+          <section aria-labelledby="cache-usage-title">
+            <h3 id="cache-usage-title" class="section-title">说明</h3>
             <ul class="usage-list">
               <li>本页仅负责读取 TXT 并构建“作品信息缓存 JSON”。</li>
               <li>该缓存供纯文本编号查询和详情查询使用。</li>
@@ -163,33 +133,27 @@
                 使用的是链接索引缓存（`tg-bot-history.json`），和本页缓存独立。
               </li>
             </ul>
-          </n-card>
+          </section>
         </div>
-      </n-space>
-    </n-card>
+      </div>
+    </section>
   </div>
 </template>
 
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { createMessage } from "../utils/ui-feedback";
+
 import {
-  NButton,
-  NCard,
-  NIcon,
-  NInput,
-  NInputNumber,
-  NSpace,
-  useMessage,
-} from "naive-ui";
-import {
-  CheckCircleOutlined,
-  ExclamationCircleOutlined,
-  FolderOpenOutlined,
-  SyncOutlined,
-} from "@vicons/antd";
+  ArrowSync24Regular,
+  CheckmarkCircle24Regular,
+  ErrorCircle24Regular,
+  FolderOpen24Regular,
+} from "@vicons/fluent";
+
 import { useTgInfoCacheWorkflow } from "../composables/useTgInfoCacheWorkflow";
 
-const message = useMessage();
+const message = createMessage();
 const BYTE_UNITS = ["B", "KB", "MB", "GB", "TB"];
 const RELATIVE_TIME_REFRESH_MS = 60 * 1000;
 
@@ -361,23 +325,47 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .tg-info-cache {
-  max-width: 760px;
+  width: min(100%, 1180px);
   margin: 0 auto;
 }
 
 .bot-card {
-  margin-bottom: 20px;
+  margin-bottom: 16px;
+  padding: 20px;
+  border: 1px solid var(--ui-divider);
+  border-radius: 8px;
+  background: var(--ui-surface, #fff);
+}
+
+.bot-card > .section-header {
+  margin-bottom: 16px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--ui-divider);
 }
 
 .bot-meta {
   margin-bottom: 16px;
+  display: grid;
+  gap: 0 16px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .meta-item {
-  font-size: 13px;
-  color: #666;
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--ui-divider) 70%, transparent);
+  font-size: 14px;
+  color: var(--ui-text-secondary);
   line-height: 1.6;
-  word-break: break-all;
+  overflow-wrap: anywhere;
+}
+
+.meta-item strong {
+  color: var(--ui-text-primary);
+  font-weight: 650;
+  text-align: right;
 }
 
 .control-buttons {
@@ -391,10 +379,57 @@ onBeforeUnmount(() => {
   margin-bottom: 16px;
 }
 
+.cache-content-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.cache-build-section {
+  display: grid;
+  gap: 12px;
+}
+
+.cache-build-section .field-label {
+  display: block;
+  min-width: 110px;
+}
+
 .concurrency-row {
   margin-bottom: 10px;
   display: flex;
   align-items: center;
+  gap: 8px;
+}
+
+.build-input-row {
+  align-items: end;
+}
+
+.build-field {
+  display: grid;
+  gap: 8px;
+}
+
+.build-field > .search-input {
+  width: 100%;
+}
+
+.build-actions {
+  display: flex;
+  flex-wrap: wrap;
   gap: 8px;
 }
 
@@ -427,14 +462,14 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: flex-start;
   gap: 12px;
-  color: #00b42a;
+  color: var(--ui-status-success, #1b7f52);
 }
 
 .error-result {
   display: flex;
   align-items: flex-start;
   gap: 12px;
-  color: #f53f3f;
+  color: var(--ui-status-error, #b23b32);
 }
 
 .result-content {
@@ -461,5 +496,46 @@ onBeforeUnmount(() => {
 
 .usage-list li {
   margin-bottom: 6px;
+}
+
+@media (max-width: 700px) {
+  .bot-card {
+    padding: 16px;
+  }
+
+  .bot-meta {
+    grid-template-columns: 1fr;
+  }
+
+  .meta-item {
+    display: block;
+  }
+
+  .meta-item strong {
+    display: block;
+    margin-top: 2px;
+    text-align: left;
+  }
+
+  .build-input-row,
+  .concurrency-row,
+  .build-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .build-input-row > *,
+  .concurrency-row > *,
+  .build-actions button {
+    width: 100%;
+  }
+
+  .search-input-group {
+    flex-direction: column;
+  }
+
+  .search-input-group > * {
+    width: 100%;
+  }
 }
 </style>

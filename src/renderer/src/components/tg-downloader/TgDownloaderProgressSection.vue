@@ -1,13 +1,20 @@
 <template>
-  <div class="progress-section">
-    <div class="progress-bar">
+  <div class="progress-section" role="region" aria-label="下载进度">
+    <div
+      class="progress-bar"
+      role="progressbar"
+      :aria-valuenow="progressPercent"
+      aria-valuemin="0"
+      aria-valuemax="100"
+      :aria-label="`下载进度 ${progressPercent}%`"
+    >
       <div
         class="progress-fill"
         :style="{ width: `${progressPercent}%` }"
       ></div>
     </div>
     <div class="progress-info">
-      <span>{{ downloadedCount }} / {{ selectedCount }}</span>
+      <span>{{ downloadedCount }} / {{ selectedCount }}（{{ progressPercent }}%）</span>
       <span class="current-file">{{ currentFile || "准备中..." }}</span>
     </div>
     <div class="progress-actions">

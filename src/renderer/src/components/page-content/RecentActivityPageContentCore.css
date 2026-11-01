@@ -305,6 +305,38 @@
 }
 
 .empty-icon {
+  display: block;
+  width: 42px;
+  height: 42px;
+  border: 2px solid var(--control-border);
+  border-radius: 12px;
+  position: relative;
+  background: var(--control-bg);
+}
+
+.empty-icon::before,
+.empty-icon::after {
+  content: "";
+  position: absolute;
+  background: var(--accent, #adb571);
+  border-radius: 2px;
+}
+
+.empty-icon::before {
+  width: 20px;
+  height: 2px;
+  left: 9px;
+  top: 19px;
+}
+
+.empty-icon::after {
+  width: 2px;
+  height: 20px;
+  left: 18px;
+  top: 10px;
+}
+
+.empty-icon {
   font-size: 42px;
   line-height: 1;
 }
@@ -666,3 +698,15 @@
     justify-self: flex-start;
   }
 }
+
+@media (prefers-reduced-motion: reduce) {
+  .loader,
+  .file-item,
+  .btn-secondary,
+  .btn-primary {
+    animation: none;
+    transition: none;
+  }
+}
+
+.activity-error { display:flex; align-items:center; justify-content:space-between; gap:.75rem; margin-top:1rem; padding:.75rem 1rem; border-radius:.6rem; background:#fff0f0; color:#8f3030; font-size:.8rem; }

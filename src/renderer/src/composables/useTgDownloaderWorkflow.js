@@ -1,7 +1,7 @@
 import { ref, computed, onMounted } from "vue";
 import { openFile } from "../api/dialogApi";
 import {
-  tgGetRecentActivity,
+  tgReadRecentActivity,
   tgReadRjList,
   tgScanRecentActivity,
   tgDownloadFiles,
@@ -17,6 +17,7 @@ export const useTgDownloaderWorkflow = () => {
 
   const excludeFilePath = ref("");
   const excludeFileRJCount = ref(0);
+  const excludeRjNumbers = ref([]);
   const useFilter = ref(true);
 
   const currentPage = ref(1);
@@ -47,10 +48,10 @@ export const useTgDownloaderWorkflow = () => {
   const loadFiles = async () => {
     try {
       addLog("读取 recent_activity.json...", "info");
-      const result = await tgGetRecentActivity();
+      const result = await tgReadRecentActivity();
 
-      if (result.success && result.files) {
-        allFiles.value = result.files.map((file) => {
+      if (result.success && result.data?.files) {
+        allFiles.value = result.data.files.map((file) => {
           if (!file.name && file.fileName) {
             file.name = file.fileName;
             console.warn(
@@ -100,6 +101,7 @@ export const useTgDownloaderWorkflow = () => {
 
       if (result.success) {
         excludeFileRJCount.value = result.count;
+        excludeRjNumbers.value = result.data || [];
         addLog(`已加载 ${result.count} 个RJ号`, "success");
         updateSkippedFiles();
       } else {
@@ -117,28 +119,8 @@ export const useTgDownloaderWorkflow = () => {
     }
 
     const skipped = new Set();
-    const excludeRjs = new Set();
-
-    if (excludeFilePath.value) {
-      try {
-        // 排除列表允许 RJ/VJ/BJ 前缀混写，统一提取数字部分后再匹配。
-        const content = require("fs").readFileSync(
-          excludeFilePath.value,
-          "utf-8",
-        );
-        const lines = content.split("\n").filter((l) => l.trim());
-        lines.forEach((line) => {
-          const match = line.match(/(RJ|VJ|BJ)?(\d+)/i);
-          if (match) {
-            excludeRjs.add(match[2]);
-          } else if (/^\d+$/.test(line.trim())) {
-            excludeRjs.add(line.trim());
-          }
-        });
-      } catch (e) {
-        console.error("读取排除文件失败:", e);
-      }
-    }
+    // The Main process reads the user-selected file through its authorized capability.
+    const excludeRjs = new Set(excludeRjNumbers.value);
 
     allFiles.value.forEach((file) => {
       if (!file.rjCode) return;

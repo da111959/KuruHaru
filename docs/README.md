@@ -1,54 +1,28 @@
-# Docs 单入口导航（Single-Agent Quick Find）
+# KuruHaru v1 文档
 
-> 状态: ✅ 可用  
-> 最后更新: 2026-04-13
+> 基线：`v1`
+> 状态：`current`
+> 校验日期：2026-11-01
 
-本文件是文档系统的**唯一入口**。单智能体工作时，按下列顺序阅读即可快速建立上下文。
+本目录只保留当前版本的可交付文档。文档描述当前代码、当前业务约束和已执行的验证。
 
----
+## 阅读顺序
 
-## 1) 必读最小集（按顺序）
+1. [`V1_BASELINE.md`](V1_BASELINE.md)：版本边界、当前事实和不变量。
+2. [`PRODUCT.md`](PRODUCT.md)：用户流程、业务域和不可擅自改变的业务规则。
+3. [`ARCHITECTURE.md`](ARCHITECTURE.md)：进程边界、模块装配、IPC、配置和持久化。
+4. [`QUALITY.md`](QUALITY.md)：验证分级、ESLint 护栏 v2 方案、交付门禁和发布记录格式。
+5. [`UI_MODERNIZATION.md`](UI_MODERNIZATION.md)：页面交互与视觉改造方案，当前为 `proposed`。
 
-1. `docs/ARCHITECTURE.md`  
-   系统分层、模块装配、当前可验证状态。
-2. `docs/design-docs/module-index.md`  
-   功能 → 文件 → IPC 的最快导航。
-3. `docs/design-docs/data-flow.md`  
-   关键数据流、IPC 通道、存储路径真相源。
-4. `docs/product-specs/README.md`  
-   业务功能清单与流程图。
-5. `docs/quality/README.md`  
-   质量约束、技术债、验证口径。
+## 文档规则
 
----
+- 每个主题只有一个当前文档；新事实写入对应主题，不另建重复副本。
+- 代码、配置、IPC、数据格式或业务行为变化时，在同一变更中更新文档。
+- `implemented` 只表示代码已合入；`verified` 需要对应的命令、GUI、在线或安装包证据。
+- 建议、待办和验收结论必须分别标注，不把建议写成已完成。
+- 配置字段的结构只来自 `src/shared/config-contract.mjs`，文档不复制默认值。
+- 修改后运行 `npm run docs:config` 和 `git diff --check -- docs`。
 
-## 2) 需要时再读
+## 交付状态
 
-- `docs/design-docs/business-background.md` / `business-boundary.md`：业务背景与边界。
-- `docs/design-docs/design-decisions.md`：关键设计决策历史。
-- `docs/design-docs/js-architecture-breakthrough.md`：JS 架构升级与设计突破建议。
-- `docs/design-docs/feature-*.md`：特性级实现留存。
-- `docs/design-docs/feature-asmr-audio-downloader.md`：ASMR 音声下载任务、VJ/BJ 识别与 Aria2 推送。
-- `docs/exec-plans/README.md`：执行计划索引（active/completed 总览）。
-- `docs/exec-plans/completed/2026-03-04-无边框窗口设计方案.md`：桌面无边框重构归档。
-- `docs/exec-plans/completed/2026-03-04-页面与JS分阶段重构方案.md`：页面与主链路 JS 重构归档。
-
----
-
-## 3) 低优先级历史资料
-
-- `docs/exec-plans/completed/*`：历史执行记录（默认可跳过）。
-- `docs/exec-plans/tech-debt/*`：历史债务条目。
-- `docs/references/*`：外部参考。
-
----
-
-## 4) 瘦身规则（防止重复）
-
-1. 同主题文档只保留一份真相源；避免根目录与子目录双份副本。
-2. 顶层文档只放“入口与总览”，细节沉淀到 `design-docs/`。
-3. 新增文档前先在本文件登记；可被现有文档覆盖时不新增。
-
-# 功能文档
-
-- [自动翻译队列](feature-translation-automation.md)：ASMR.ONE 最近作品筛选、低峰自动下载翻译、字幕上传与队列清理。
+本轮仅整理 v1 文档，不修改业务代码。UI 改造与业务代码优化仍需按文档中的阶段、边界和验收标准另行实施。

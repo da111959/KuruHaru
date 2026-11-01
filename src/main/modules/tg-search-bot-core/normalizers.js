@@ -98,6 +98,13 @@ export function ensureHistoryShape(parsedData) {
   if (!parsedData || typeof parsedData !== "object") {
     return {
       updatedAt: new Date().toISOString(),
+      sync: {
+        cursorMessageId: null,
+        scanCheckpointOffsetId: null,
+        initialSyncComplete: false,
+        processedMessageIds: [],
+        lastSyncAt: null,
+      },
       history: {},
     };
   }
@@ -105,12 +112,38 @@ export function ensureHistoryShape(parsedData) {
   if (!parsedData.history || typeof parsedData.history !== "object") {
     return {
       updatedAt: new Date().toISOString(),
+      sync: {
+        cursorMessageId: null,
+        scanCheckpointOffsetId: null,
+        initialSyncComplete: false,
+        processedMessageIds: [],
+        lastSyncAt: null,
+      },
       history: {},
     };
   }
 
   return {
     updatedAt: parsedData.updatedAt || new Date().toISOString(),
-    history: parsedData.history,
+    sync: {
+      cursorMessageId: Number(parsedData.sync?.cursorMessageId) || null,
+      scanCheckpointOffsetId:
+        Number(parsedData.sync?.scanCheckpointOffsetId) || null,
+      initialSyncComplete: parsedData.sync?.initialSyncComplete === true,
+      processedMessageIds: Array.isArray(parsedData.sync?.processedMessageIds)
+        ? parsedData.sync.processedMessageIds.slice(-50000).map(String)
+        : [],
+      lastSyncAt: parsedData.sync?.lastSyncAt || null,
+    },
+    history: Object.fromEntries(
+      Object.entries(parsedData.history).map(([code, entry]) => {
+        if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+          return [code, entry];
+        }
+        const normalizedEntry = { ...entry };
+        delete normalizedEntry.alternateUrls;
+        return [code, normalizedEntry];
+      }),
+    ),
   };
 }

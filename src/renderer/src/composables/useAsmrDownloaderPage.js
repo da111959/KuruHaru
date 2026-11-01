@@ -3,10 +3,13 @@ import { loadConfig, saveConfig } from "../api/configApi";
 import { openDirectory, openFile } from "../api/dialogApi";
 import { asmrRunAudioDownloader } from "../api/asmrApi";
 import { readFile } from "../api/localApi";
+import { CONFIG_DEFAULTS } from "../../../shared/config-contract.mjs";
 
-const DEFAULT_RPC_URL = "http://localhost:6800/jsonrpc";
-const DEFAULT_MAX_AUTO_TASKS_PER_WORK = 20;
-const DEFAULT_FILTER_VIDEO_FORMATS = true;
+const DEFAULT_RPC_URL = CONFIG_DEFAULTS.asmr.downloadRpcUrl;
+const DEFAULT_MAX_AUTO_TASKS_PER_WORK =
+  CONFIG_DEFAULTS.asmr.downloadMaxAutoTasksPerWork;
+const DEFAULT_FILTER_VIDEO_FORMATS =
+  CONFIG_DEFAULTS.asmr.downloadFilterVideoFormats;
 
 function buildInputStats(rawText = "") {
   const rawLines = String(rawText || "").split(/\r?\n/);
@@ -90,6 +93,7 @@ export const useAsmrDownloaderPage = () => {
   const taskPreview = ref([]);
   const manualItems = ref([]);
   const pushErrors = ref([]);
+  const summary = ref(null);
 
   const inputStats = computed(() => buildInputStats(inputText.value));
 
@@ -228,6 +232,7 @@ export const useAsmrDownloaderPage = () => {
     taskPreview.value = [];
     manualItems.value = [];
     pushErrors.value = [];
+    summary.value = null;
 
     try {
       const result = await asmrRunAudioDownloader({
@@ -255,6 +260,20 @@ export const useAsmrDownloaderPage = () => {
       }
 
       summaryText.value = formatSummary(result);
+      summary.value = {
+        ...(result.summary || {}),
+        submittedCount: Array.isArray(result.taskManifest)
+          ? result.taskManifest.filter((task) =>
+              ["submitted", "active", "completed"].includes(task.state),
+            ).length
+          : result.summary?.pushedCount || 0,
+        completedCount: Array.isArray(result.taskManifest)
+          ? result.taskManifest.filter((task) => task.state === "completed").length
+          : 0,
+        uncertainCount: Array.isArray(result.taskManifest)
+          ? result.taskManifest.filter((task) => task.state === "uncertain").length
+          : result.summary?.pushErrorCount || 0,
+      };
       taskPreview.value = Array.isArray(result.taskPreview)
         ? result.taskPreview
         : [];
@@ -288,6 +307,7 @@ export const useAsmrDownloaderPage = () => {
     taskPreview,
     manualItems,
     pushErrors,
+    summary,
     inputStats,
     canSubmit,
     hasResult,

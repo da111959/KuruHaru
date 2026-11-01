@@ -12,8 +12,10 @@ files:
   - "out/**/*"
   - "!out/**/*.map"
 extraResources:
-  - from: config
-    to: config
+  - from: config/config-template.json
+    to: config/config-template.json
+  - from: config/tags.json
+    to: config/tags.json
   - from: resources/default-avatar.png
     to: default-avatar.png
 asarUnpack:

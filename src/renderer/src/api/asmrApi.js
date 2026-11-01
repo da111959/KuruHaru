@@ -1,4 +1,4 @@
-import { callBridge, getApiNamespace, getWindowApi, noop, resolveBridgeMethod } from './bridge';
+import { callBridge, getApiNamespace } from './bridge';
 
 const getAsmrBridge = () => getApiNamespace('asmr');
 
@@ -6,90 +6,50 @@ export const asmrLogin = (payload) =>
   callBridge({
     namespace: 'asmr',
     method: 'login',
-    fallbacks: ['asmrLogin'],
     args: [payload],
   });
 
+export const asmrCheckLogin = () =>
+  callBridge({ namespace: "asmr", method: "checkLogin" });
+
+export const asmrLogout = () =>
+  callBridge({ namespace: "asmr", method: "logout" });
+
 export const asmrFetchCloudWorks = () =>
-  callBridge({
-    namespace: 'asmr',
-    method: 'fetchCloudWorks',
-    fallbacks: ['asmrFetchCloudWorks'],
-  });
+  callBridge({ namespace: 'asmr', method: 'fetchCloudWorks' });
 
 export const asmrRunAudioDownloader = (payload) =>
   callBridge({
     namespace: 'asmr',
     method: 'runAudioDownloader',
-    fallbacks: ['asmrRunAudioDownloader'],
     args: [payload],
-    fallbackValue: () => {
-      const api = getWindowApi();
-      if (typeof api?.invoke === 'function') {
-        return api.invoke('asmr-audio-downloader-run', payload);
-      }
-      throw new Error(
-        '[renderer-api] Missing bridge method: asmr.runAudioDownloader / asmrRunAudioDownloader / invoke',
-      );
-    },
   });
 
-export const asmrDeleteWorks = (workIds) =>
+export const asmrCloudDeletePreview = (payload) =>
   callBridge({
-    namespace: 'asmr',
-    method: 'deleteWorks',
-    fallbacks: ['asmrDeleteWorks'],
-    args: [workIds],
+    namespace: "asmr",
+    method: "cloudDeletePreview",
+    args: [payload],
+  });
+
+export const asmrCloudDeleteExecute = (previewId) =>
+  callBridge({
+    namespace: "asmr",
+    method: "cloudDeleteExecute",
+    args: [previewId],
   });
 
 export const asmrGetCachedCloudWorks = () =>
-  callBridge({
-    namespace: 'asmr',
-    method: 'getCachedCloudWorks',
-    fallbacks: ['asmrGetCachedCloudWorks'],
-  });
+  callBridge({ namespace: 'asmr', method: 'getCachedCloudWorks' });
 
 export const onCloudWorksUpdated = (callback) => {
-  const bridge = getAsmrBridge();
-  const api = getWindowApi();
-  if (typeof bridge.onCloudWorksUpdated === 'function') {
-    return bridge.onCloudWorksUpdated(callback);
-  }
-  if (typeof api.onCloudWorksUpdated === 'function') {
-    return api.onCloudWorksUpdated(callback);
-  }
-  if (typeof api.on === 'function') {
-    api.on('cloud-works-updated', callback);
-    return () => api.removeAllListeners?.('cloud-works-updated');
-  }
-  return noop;
+  return getAsmrBridge().onCloudWorksUpdated(callback);
 };
-
-export const removeCloudWorksUpdatedListeners = () => {
-  const bridge = getAsmrBridge();
-  const api = getWindowApi();
-  if (typeof bridge.removeCloudWorksUpdatedListeners === 'function') {
-    return bridge.removeCloudWorksUpdatedListeners();
-  }
-  if (typeof api.removeCloudWorksUpdatedListeners === 'function') {
-    return api.removeCloudWorksUpdatedListeners();
-  }
-  return api.removeAllListeners?.('cloud-works-updated');
-};
-
-export const asmrDeleteByRJ = (rjCodes) =>
-  callBridge({
-    namespace: 'asmr',
-    method: 'deleteByRJ',
-    fallbacks: ['asmrDeleteByRJ'],
-    args: [rjCodes],
-  });
 
 export const asmrFetchChineseWorks = (options) =>
   callBridge({
     namespace: 'asmr',
     method: 'fetchChineseWorks',
-    fallbacks: ['asmrFetchChineseWorks'],
     args: [options],
   });
 
@@ -97,7 +57,6 @@ export const asmrSetChineseListPath = (path) =>
   callBridge({
     namespace: 'asmr',
     method: 'setChineseListPath',
-    fallbacks: ['asmrSetChineseListPath'],
     args: [path],
   });
 
@@ -105,58 +64,33 @@ export const asmrGetChineseListPath = () =>
   callBridge({
     namespace: 'asmr',
     method: 'getChineseListPath',
-    fallbacks: ['asmrGetChineseListPath'],
   });
 
 export const asmrReadChineseList = () =>
   callBridge({
     namespace: 'asmr',
     method: 'readChineseList',
-    fallbacks: ['asmrReadChineseList'],
   });
 
-export const asmrWriteChineseList = (rjCodes) => {
-  const method = resolveBridgeMethod({
-    namespace: 'asmr',
-    method: 'writeChineseList',
-    fallbacks: ['asmrWriteChineseList'],
-  });
-  return method(rjCodes);
-};
+export const asmrWriteChineseList = (rjCodes) =>
+  callBridge({ namespace: 'asmr', method: 'writeChineseList', args: [rjCodes] });
 
 export const onChineseListProgress = (handler) => {
-  const bridge = getAsmrBridge();
-  const api = getWindowApi();
-  if (typeof bridge.onChineseListProgress === 'function') {
-    return bridge.onChineseListProgress(handler);
-  }
-  if (typeof api.onChineseListProgress === 'function') {
-    return api.onChineseListProgress(handler);
-  }
-  if (typeof api.on === 'function') {
-    api.on('chinese-list-progress', handler);
-    return () => api.removeAllListeners?.('chinese-list-progress');
-  }
-  return noop;
+  return getAsmrBridge().onChineseListProgress(handler);
 };
 
-export const removeChineseListProgressListener = (handler) => {
-  const bridge = getAsmrBridge();
-  const api = getWindowApi();
-  if (typeof bridge.removeChineseListProgressListener === 'function') {
-    return bridge.removeChineseListProgressListener(handler);
-  }
-  if (typeof api.removeChineseListProgressListener === 'function') {
-    return api.removeChineseListProgressListener(handler);
-  }
-  return api.removeListener?.('chinese-list-progress', handler);
-};
+export const filterRjFromUrl = (payload) =>
+  callBridge({ namespace: 'asmr', method: 'filterRjFromUrl', args: [payload] });
 
-export const filterRjFromUrl = (payload) => {
-  const method = resolveBridgeMethod({
+export const listFilterSnapshots = (limit = 20) =>
+  callBridge({ namespace: 'asmr', method: 'listFilterSnapshots', args: [limit] });
+
+export const readFilterSnapshot = (snapshotId) =>
+  callBridge({ namespace: 'asmr', method: 'readFilterSnapshot', args: [snapshotId] });
+
+export const diffFilterSnapshots = (previousId, currentId) =>
+  callBridge({
     namespace: 'asmr',
-    method: 'filterRjFromUrl',
-    fallbacks: ['filterRjFromUrl', 'filterRjFromUrlLegacy'],
+    method: 'diffFilterSnapshots',
+    args: [{ previousId, currentId }],
   });
-  return method(payload);
-};

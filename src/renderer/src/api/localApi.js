@@ -1,26 +1,18 @@
-import { callBridge, resolveBridgeMethod } from './bridge';
+import { callBridge } from './bridge';
 
 export const scanLocalArchives = (dir) =>
   callBridge({
     namespace: 'local',
     method: 'scanLocalArchives',
-    fallbacks: ['scanLocalArchives'],
     args: [dir],
   });
 
-export const readFile = (filePath) => {
-  const method = resolveBridgeMethod({
-    namespace: 'local',
-    method: 'readFile',
-    fallbacks: ['readFile'],
-  });
-  return method(filePath);
-};
+export const readFile = (filePath) =>
+  callBridge({ namespace: 'local', method: 'readFile', args: [filePath] });
 
 export const writeFile = (payload) =>
   callBridge({
     namespace: 'local',
     method: 'writeFile',
-    fallbacks: ['writeFile'],
     args: [payload],
   });

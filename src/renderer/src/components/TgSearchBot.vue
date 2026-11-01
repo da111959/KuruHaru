@@ -1,318 +1,193 @@
 <template>
   <div class="tg-search-bot tg-search-bot-theme">
-    <n-card title="Telegram 搜索 Bot" :bordered="false" class="bot-card">
-      <n-space vertical :size="16">
-        <div class="bot-status">
-          <n-tag :type="botStatus.running ? 'success' : 'error'">
-            {{ botStatus.running ? "运行中" : "已停止" }}
-          </n-tag>
-          <span v-if="botStatus.connected" class="connected-status">
-            <n-icon size="14">
-              <CheckCircleOutlined />
-            </n-icon>
-            已连接
-          </span>
-          <span v-else class="disconnected-status">
-            <n-icon size="14">
-              <CloseCircleOutlined />
-            </n-icon>
-            未连接
-          </span>
-          <n-tag type="info">索引 {{ botStatus.indexedCount || 0 }}</n-tag>
-        </div>
+    <header class="page-header bot-page-header">
+      <div>
+        <p class="page-eyebrow">Telegram 工具</p>
+        <h1 class="page-title">搜索 Bot</h1>
+        <p class="page-header-subtitle">管理 Bot、索引和编号查询，所有状态都在当前页面可见。</p>
+      </div>
+      <div class="header-status" role="status" aria-live="polite">
+        <span class="status-badge" :class="botStatus.running ? 'online' : 'offline'">
+          {{ botStatus.running ? "运行中" : "已停止" }}
+        </span>
+        <span class="status-badge" :class="botStatus.connected ? 'online' : 'offline'">
+          {{ botStatus.connected ? "已连接" : "未连接" }}
+        </span>
+      </div>
+    </header>
 
-        <div class="bot-meta">
-          <div class="meta-item">
-            频道：{{ botStatus.sourceChannelId || "未配置" }}
+    <section class="bot-card workbench-section status-section" aria-labelledby="bot-overview-title">
+      <div class="section-header">
+        <div>
+          <h2 id="bot-overview-title" class="section-title">索引与连接状态</h2>
+          <p class="section-caption">查看连接状态、索引进度并执行作品查询。</p>
+          <p class="section-summary">先确认索引新鲜度，再执行同步或搜索。</p>
+        </div>
+        <button type="button" class="btn-secondary" :aria-busy="isRefreshingBotStatus" :disabled="isRefreshingBotStatus" @click="getBotStatus">
+          <ArrowSync24Regular class="button-icon" aria-hidden="true" />
+          重试状态
+        </button>
+      </div>
+      <div class="bot-status status-summary" role="status" aria-live="polite">
+        <span>索引 {{ botStatus.indexedCount || 0 }} 条</span>
+        <span class="status-badge" :class="botStatus.freshness === 'fresh' ? 'online' : botStatus.freshness === 'error' ? 'offline' : 'status-warning'">
+          索引{{ botStatusState === "error" ? "读取失败" : botStatus.freshness === "fresh" ? "新鲜" : botStatus.freshness === "stale" ? "已陈旧" : "未知" }}
+          <span v-if="botStatus.indexUpdatedAt && botStatusState !== 'error'">· {{ formatIndexAge(botStatus.indexAgeMs) }}</span>
+        </span>
+        <span v-if="botStatusError" class="status-error" role="alert">{{ botStatusError }}</span>
+      </div>
+
+      <div class="bot-meta status-details">
+        <div class="meta-item"><strong>频道：</strong>{{ botStatus.sourceChannelId || "未配置" }}</div>
+        <div class="meta-item"><strong>历史同步：</strong>{{ botStatus.historySync?.initialSyncComplete ? "增量模式" : "初次回填/断点模式" }}；去重消息 {{ botStatus.historySync?.processedMessageIds || 0 }} 条</div>
+        <div class="meta-item"><strong>链接索引：</strong>{{ botStatus.historyFilePath || "未生成" }}</div>
+        <div class="meta-item"><strong>作品信息缓存：</strong>{{ infoCacheStatusResult?.cacheFilePath || "未生成" }}</div>
+        <div class="meta-item"><strong>缓存策略：</strong>陈旧时间 {{ formatDuration(infoCacheStatusResult?.cache?.staleAfterMs) }}；淘汰 {{ infoCacheStatusResult?.cache?.evictions?.totalEvicted || 0 }} 条</div>
+      </div>
+
+      <div class="cache-controls">
+        <span class="status-badge" :class="infoCacheStatusResult?.hotCache?.paused ? 'status-warning' : 'online'">热缓存{{ infoCacheStatusResult?.hotCache?.paused ? "已暂停" : "运行中" }}</span>
+        <button type="button" class="btn-secondary" :disabled="!infoCacheStatusResult?.hotCache?.enabled" @click="handleToggleInfoCache">
+          {{ infoCacheStatusResult?.hotCache?.paused ? "恢复缓存刷新" : "暂停缓存刷新" }}
+        </button>
+        <button type="button" class="btn-secondary" @click="getInfoCacheStatusResult">
+          <ArrowSync24Regular class="button-icon" aria-hidden="true" />
+          刷新缓存状态
+        </button>
+      </div>
+    </section>
+
+    <section class="bot-card workbench-section bot-actions-section" aria-labelledby="bot-actions-title">
+      <div class="section-header">
+        <div>
+          <h2 id="bot-actions-title" class="section-title">Bot 操作</h2>
+          <p class="section-summary">启动、停止和同步会锁定对应入口，避免重复触发。</p>
+        </div>
+      </div>
+      <div class="control-buttons">
+        <button type="button" class="btn-primary" :aria-busy="isStarting" :disabled="isStarting || botStatus.running" @click="handleStartBot">
+          <Play24Regular class="button-icon" aria-hidden="true" />
+          启动 Bot
+        </button>
+        <button type="button" class="btn-danger" :aria-busy="isStopping" :disabled="isStopping || !botStatus.running" @click="handleStopBot">
+          <Stop24Regular class="button-icon" aria-hidden="true" />
+          停止 Bot
+        </button>
+        <button type="button" class="btn-secondary" :aria-busy="isSyncingHistory" :disabled="isSyncingHistory" @click="handleSyncHistory">
+          <ArrowSync24Regular class="button-icon" aria-hidden="true" />
+          获取频道消息并保存索引
+        </button>
+        <button type="button" class="btn-secondary" :aria-busy="isGeneratingDailyZip" :disabled="isGeneratingDailyZip" @click="handleGenerateDailyZip">
+          <CloudArrowUp24Regular class="button-icon" aria-hidden="true" />
+          生成并上传整合包
+        </button>
+      </div>
+      <div v-if="dailyZipResult?.url" class="daily-zip-result status-success" role="status">
+        <a :href="dailyZipResult.url" target="_blank" rel="noreferrer" class="daily-zip-link">{{ dailyZipResult.fileName || "打开整合包链接" }}</a>
+      </div>
+    </section>
+
+    <section class="bot-card workbench-section query-section" aria-labelledby="bot-search-title">
+      <div class="section-header">
+        <div>
+          <h2 id="bot-search-title" class="section-title">查询</h2>
+          <p class="section-summary">输入 RJ、VJ 或 BJ 编号，按 Enter 也可以提交。</p>
+        </div>
+      </div>
+      <div class="search-section query-block">
+        <label class="field-label" for="bot-search-code">编号搜索</label>
+        <div class="search-input-group">
+          <input id="bot-search-code" v-model="searchRjCode" placeholder="例如 RJ189111 / VJ123456" class="search-input" @keyup.enter="handleSearch" />
+          <button type="button" class="btn-primary" :aria-busy="isSearching" :disabled="isSearching" @click="handleSearch">
+            <Search24Regular class="button-icon" aria-hidden="true" />
+            搜索
+          </button>
+        </div>
+      </div>
+      <div class="search-section query-block">
+        <label class="field-label" for="bot-info-code">详情查询</label>
+        <div class="search-input-group">
+          <input id="bot-info-code" v-model="infoWorkCode" placeholder="直接输入 RJ/VJ/BJ 编号" class="search-input" @keyup.enter="handleInfoSearch" />
+          <button type="button" class="btn-secondary" :aria-busy="isInfoSearching" :disabled="isInfoSearching" @click="handleInfoSearch">
+            <Search24Regular class="button-icon" aria-hidden="true" />
+            查询详情
+          </button>
+        </div>
+      </div>
+
+      <div v-if="searchResult" class="search-result" role="status" aria-live="polite">
+        <section :class="searchResult.success ? 'success-result' : 'error-result'" aria-label="搜索结果">
+          <CheckmarkCircle24Regular v-if="searchResult.success" class="result-state-icon" aria-hidden="true" />
+          <ErrorCircle24Regular v-else class="result-state-icon" aria-hidden="true" />
+          <div class="result-content">
+            <div class="result-message">{{ searchResult.message }}</div>
+            <div v-if="searchResult.pipeline" class="pipeline-status">
+              <span v-for="stage in searchResult.pipeline" :key="stage.stage" class="status-badge" :class="pipelineTagType(stage.status)">{{ pipelineStageName(stage.stage) }}：{{ pipelineStatusName(stage.status) }}</span>
+            </div>
+            <a v-if="searchResult.url" :href="searchResult.url" target="_blank" rel="noreferrer" class="result-link">{{ searchResult.url }}</a>
           </div>
-          <div class="meta-item">
-            链接索引缓存（/search）：{{ botStatus.historyFilePath || "未生成" }}
+        </section>
+      </div>
+
+      <div v-if="infoResult" class="search-result" role="status" aria-live="polite">
+        <section :class="infoResult.success ? 'success-result' : 'error-result'" aria-label="详情查询结果">
+          <CheckmarkCircle24Regular v-if="infoResult.success" class="result-state-icon" aria-hidden="true" />
+          <ErrorCircle24Regular v-else class="result-state-icon" aria-hidden="true" />
+          <div class="result-content">
+            <div class="result-message">{{ infoResult.message }}</div>
+            <div v-if="infoResult.success" class="result-meta">编号：{{ infoResult.workCode || infoWorkCode }} · 数据来源：{{ infoResult.source || "unknown" }}</div>
           </div>
-          <div class="meta-item">
-            作品信息缓存（纯文本/详情）：{{
-              infoCacheStatusResult?.cacheFilePath || "未生成"
-            }}
-          </div>
+        </section>
+      </div>
+    </section>
+
+    <section v-if="syncResult" class="bot-card" aria-labelledby="bot-sync-title">
+      <div class="section-header"><h2 id="bot-sync-title" class="section-title">索引同步结果</h2></div>
+      <div :class="syncResult.success ? 'success-result' : 'error-result'" role="status" aria-live="polite">
+        <CheckmarkCircle24Regular v-if="syncResult.success" class="result-state-icon" aria-hidden="true" />
+        <ErrorCircle24Regular v-else class="result-state-icon" aria-hidden="true" />
+        <div class="result-content">
+          <div class="result-message">{{ syncResult.success ? syncResult.message : syncResult.error || syncResult.message || "索引同步失败" }}</div>
+          <div v-if="syncResult.success && syncResult.stats" class="result-meta">扫描 {{ syncResult.stats.scannedMessages }} 条，匹配 {{ syncResult.stats.matchedMessages }} 条，新增 {{ syncResult.stats.newCount }}，更新 {{ syncResult.stats.updatedCount }}</div>
         </div>
+      </div>
+    </section>
 
-        <div class="control-buttons">
-          <n-button
-            type="primary"
-            :loading="isStarting"
-            :disabled="botStatus.running"
-            @click="handleStartBot"
-          >
-            <template #icon>
-              <PlayCircleOutlined />
-            </template>
-            启动 Bot
-          </n-button>
-
-          <n-button
-            type="error"
-            :loading="isStopping"
-            :disabled="!botStatus.running"
-            @click="handleStopBot"
-          >
-            <template #icon>
-              <StopOutlined />
-            </template>
-            停止 Bot
-          </n-button>
-
-          <n-button
-            type="warning"
-            :loading="isSyncingHistory"
-            @click="handleSyncHistory"
-          >
-            <template #icon>
-              <SyncOutlined />
-            </template>
-            获取频道消息并保存索引
-          </n-button>
-
-          <n-button
-            type="info"
-            :loading="isGeneratingDailyZip"
-            @click="handleGenerateDailyZip"
-          >
-            <template #icon>
-              <CloudUploadOutlined />
-            </template>
-            强制生成并上传整合包
-          </n-button>
-        </div>
-
-        <n-alert
-          v-if="dailyZipResult?.url"
-          type="success"
-          title="整合包已上传"
-          class="daily-zip-result"
-        >
-          <a
-            :href="dailyZipResult.url"
-            target="_blank"
-            rel="noreferrer"
-            class="daily-zip-link"
-          >
-            {{ dailyZipResult.fileName || "打开整合包链接" }}
-          </a>
-        </n-alert>
-
-        <div class="search-section">
-          <div class="search-input-group">
-            <n-input
-              v-model:value="searchRjCode"
-              :bordered="false"
-              placeholder="请输入编号（如 RJ189111 / VJ123456）"
-              class="search-input"
-              @keyup.enter="handleSearch"
-            />
-            <n-button
-              type="primary"
-              text
-              :bordered="false"
-              :loading="isSearching"
-              @click="handleSearch"
-            >
-              <template #icon>
-                <SearchOutlined />
-              </template>
-              搜索
-            </n-button>
-          </div>
-        </div>
-
-        <div class="search-section">
-          <div class="search-input-group">
-            <n-input
-              v-model:value="infoWorkCode"
-              :bordered="false"
-              placeholder="查询详情（直接输入 RJ/VJ/BJ 编号）"
-              class="search-input"
-              @keyup.enter="handleInfoSearch"
-            />
-            <n-button
-              type="info"
-              text
-              :bordered="false"
-              :loading="isInfoSearching"
-              @click="handleInfoSearch"
-            >
-              <template #icon>
-                <SearchOutlined />
-              </template>
-              查询详情
-            </n-button>
-          </div>
-        </div>
-
-        <div v-if="searchResult" class="search-result">
-          <n-card title="搜索结果" size="small" :bordered="false">
-            <div v-if="searchResult.success" class="success-result">
-              <n-icon size="20">
-                <CheckCircleOutlined />
-              </n-icon>
-              <div class="result-content">
-                <div class="result-message">{{ searchResult.message }}</div>
-                <n-a
-                  v-if="searchResult.url"
-                  :href="searchResult.url"
-                  target="_blank"
-                  class="result-link"
-                >
-                  {{ searchResult.url }}
-                </n-a>
-                <div
-                  v-if="searchResult.alternateUrls?.length"
-                  class="result-link-list"
-                >
-                  <n-a
-                    v-for="(
-                      alternateUrl, index
-                    ) in searchResult.alternateUrls.slice(0, 2)"
-                    :key="`${alternateUrl}-${index}`"
-                    :href="alternateUrl"
-                    target="_blank"
-                    class="result-link"
-                  >
-                    备用链接{{ index + 1 }}：{{ alternateUrl }}
-                  </n-a>
-                </div>
-              </div>
-            </div>
-            <div v-else class="error-result">
-              <n-icon size="20">
-                <ExclamationCircleOutlined />
-              </n-icon>
-              <div class="result-content">
-                <div class="result-message">{{ searchResult.message }}</div>
-              </div>
-            </div>
-          </n-card>
-        </div>
-
-        <div v-if="infoResult" class="search-result">
-          <n-card title="详情查询结果" size="small" :bordered="false">
-            <div v-if="infoResult.success" class="success-result">
-              <n-icon size="20">
-                <CheckCircleOutlined />
-              </n-icon>
-              <div class="result-content">
-                <div class="result-message">{{ infoResult.message }}</div>
-                <div class="result-message">
-                  编号：{{ infoResult.workCode || infoWorkCode }}
-                </div>
-                <div class="result-message">
-                  数据来源：{{ infoResult.source || "unknown" }}
-                </div>
-                <div class="result-message">请在 TG 中查看图文回复效果。</div>
-              </div>
-            </div>
-            <div v-else class="error-result">
-              <n-icon size="20">
-                <ExclamationCircleOutlined />
-              </n-icon>
-              <div class="result-content">
-                <div class="result-message">{{ infoResult.message }}</div>
-              </div>
-            </div>
-          </n-card>
-        </div>
-
-        <div v-if="syncResult" class="sync-result">
-          <n-card title="索引同步结果" size="small" :bordered="false">
-            <div v-if="syncResult.success" class="success-result">
-              <n-icon size="20">
-                <CheckCircleOutlined />
-              </n-icon>
-              <div class="result-content">
-                <div class="result-message">{{ syncResult.message }}</div>
-                <div v-if="syncResult.historyFilePath" class="result-message">
-                  索引文件：{{ syncResult.historyFilePath }}
-                </div>
-                <div v-if="syncResult.stats" class="result-message">
-                  扫描 {{ syncResult.stats.scannedMessages }} 条消息，匹配
-                  {{ syncResult.stats.matchedMessages }} 条，新增
-                  {{ syncResult.stats.newCount }}，更新
-                  {{ syncResult.stats.updatedCount }}
-                </div>
-                <div v-if="syncResult.stats" class="result-message">
-                  前置包扫描
-                  {{ syncResult.stats.presetScannedLines || 0 }} 行，命中
-                  {{ syncResult.stats.presetMatchedLines || 0 }} 行，补充
-                  {{ syncResult.stats.presetAdded || 0 }}，更新
-                  {{ syncResult.stats.presetUpdated || 0 }}
-                </div>
-              </div>
-            </div>
-            <div v-else class="error-result">
-              <n-icon size="20">
-                <ExclamationCircleOutlined />
-              </n-icon>
-              <div class="result-content">
-                <div class="result-message">
-                  {{ syncResult.error || syncResult.message || "索引同步失败" }}
-                </div>
-              </div>
-            </div>
-          </n-card>
-        </div>
-
-        <div class="usage-section">
-          <n-card title="使用说明" size="small" :bordered="false">
-            <ul class="usage-list">
-              <li>先点击“获取频道消息并保存索引”生成本地索引</li>
-              <li>同步会合并“频道消息 + 前置包 TXT”到同一个索引文件</li>
-              <li>输入 RJ/VJ/BJ 编号（如 RJ189111），点击搜索</li>
-              <li>
-                输入编号点击“查询详情”，等价于 Bot 命令 `/info &lt;编号&gt;`
-              </li>
-              <li>TXT 构建作品信息缓存请到「TG信息缓存」页面</li>
-              <li>
-                群聊命令支持：/search@BotName RJ123456、@BotName /search
-                RJ123456、@BotName RJ123456
-              </li>
-              <li>Bot 会先查历史索引，再查前置包内存索引（极速）</li>
-              <li>命中前置包后会后台补充频道结果并更新历史索引</li>
-              <li>详情查询优先读取缓存 JSON，未命中会实时抓取并自动回填缓存</li>
-              <li>如都未找到，会返回提示信息</li>
-            </ul>
-          </n-card>
-        </div>
-      </n-space>
-    </n-card>
+    <section class="bot-card usage-section" aria-labelledby="bot-help-title">
+      <h2 id="bot-help-title" class="section-title">使用说明</h2>
+      <ul class="usage-list">
+        <li>先同步频道消息和前置包 TXT，再进行编号搜索。</li>
+        <li>详情查询优先读取缓存，未命中时会实时抓取并回填。</li>
+        <li>群聊支持 `/search@BotName RJ123456`、`@BotName /search RJ123456` 等命令。</li>
+      </ul>
+    </section>
   </div>
 </template>
 
 <script setup>
+import { createMessage } from "../utils/ui-feedback";
+
 import {
-  NCard,
-  NInput,
-  NButton,
-  NTag,
-  NA, // 这里已将 NLink 改为 NA
-  NIcon,
-  useMessage,
-} from "naive-ui";
-import {
-  PlayCircleOutlined,
-  StopOutlined,
-  SyncOutlined,
-  CloudUploadOutlined,
-  SearchOutlined,
-  CheckCircleOutlined,
-  CloseCircleOutlined,
-  ExclamationCircleOutlined, // 对应原 WarningCircle
-} from "@vicons/antd";
+  ArrowSync24Regular,
+  CheckmarkCircle24Regular,
+  CloudArrowUp24Regular,
+  ErrorCircle24Regular,
+  Play24Regular,
+  Search24Regular,
+  Stop24Regular,
+} from "@vicons/fluent";
+
 import { useTgSearchBotWorkflow } from "../composables/useTgSearchBotWorkflow";
 
-// 统一用 naive-ui message 承接异步操作反馈，避免在 workflow 内直接耦合 UI 组件。
-const message = useMessage();
+// 统一用本地 message 适配层承接异步操作反馈，避免在 workflow 内直接耦合 UI 组件。
+const message = createMessage();
 
 // 页面仅负责展示与触发交互，Bot 启停/索引同步/搜索状态都由 workflow 统一管理。
 const {
   botStatus,
+  botStatusState,
+  botStatusError,
+  isRefreshingBotStatus,
   isStarting,
   isStopping,
   isSearching,
@@ -329,20 +204,85 @@ const {
   handleSearch,
   handleInfoSearch,
   handleSyncHistory,
+  handleToggleInfoCache,
   isGeneratingDailyZip,
   dailyZipResult,
   handleGenerateDailyZip,
+  getBotStatus,
 } = useTgSearchBotWorkflow({ message });
+
+const formatIndexAge = (ageMs) => {
+  if (!Number.isFinite(ageMs)) return "更新时间未知";
+  const minutes = Math.floor(ageMs / 60000);
+  if (minutes < 1) return "刚刚更新";
+  if (minutes < 60) return `${minutes} 分钟前更新`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} 小时前更新`;
+  return `${Math.floor(hours / 24)} 天前更新`;
+};
+
+const formatDuration = (durationMs) => {
+  if (!Number.isFinite(durationMs) || durationMs <= 0) return "未知";
+  const hours = Math.round(durationMs / 3600000);
+  return hours >= 24 ? `${Math.round(hours / 24)} 天` : `${hours} 小时`;
+};
+
+const pipelineStageNames = {
+  history: "历史索引",
+  preset: "前置包",
+  channel: "频道",
+  one: "One",
+  queue: "入队",
+};
+const pipelineStatusNames = {
+  hit: "命中",
+  miss: "未命中",
+  skip: "跳过",
+  fail: "失败",
+  queued: "已入队",
+};
+const pipelineStageName = (stage) => pipelineStageNames[stage] || stage;
+const pipelineStatusName = (status) => pipelineStatusNames[status] || status;
+const pipelineTagType = (status) =>
+  status === "hit" || status === "queued"
+    ? "success"
+    : status === "fail"
+      ? "error"
+      : status === "miss"
+        ? "warning"
+        : "default";
 </script>
 
 <style scoped>
 .tg-search-bot {
-  max-width: 600px;
+  width: min(100%, 1180px);
   margin: 0 auto;
 }
 
+.bot-page-header {
+  margin-bottom: 16px;
+}
+
+.header-status,
+.cache-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
 .bot-card {
-  margin-bottom: 20px;
+  margin-bottom: 16px;
+  padding: 20px;
+  border: 1px solid var(--ui-divider);
+  border-radius: 8px;
+  background: var(--ui-surface, #fff);
+}
+
+.bot-card > .section-header {
+  margin-bottom: 16px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--ui-divider);
 }
 
 .bot-status {
@@ -353,15 +293,30 @@ const {
   flex-wrap: wrap;
 }
 
+.status-summary {
+  padding: 12px 14px;
+  border: 1px solid var(--ui-divider);
+  border-radius: 6px;
+  background: var(--ui-surface-subtle, #f7f8f4);
+}
+
 .bot-meta {
-  margin-bottom: 16px;
+  margin: 16px 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 16px;
 }
 
 .meta-item {
-  font-size: 13px;
-  color: #666;
+  font-size: 14px;
+  color: var(--ui-text-secondary);
   line-height: 1.6;
-  word-break: break-all;
+  overflow-wrap: anywhere;
+}
+
+.meta-item strong {
+  color: var(--ui-text-primary);
+  font-weight: 650;
 }
 
 .connected-status {
@@ -380,6 +335,11 @@ const {
   font-size: 14px;
 }
 
+.status-error {
+  color: #b23b32;
+  font-size: 13px;
+}
+
 .control-buttons {
   display: flex;
   gap: 12px;
@@ -388,7 +348,14 @@ const {
 }
 
 .search-section {
-  margin-bottom: 20px;
+  margin-bottom: 18px;
+}
+
+.field-label {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--ui-text-primary);
+  font-weight: 650;
 }
 
 .search-input {
@@ -407,14 +374,14 @@ const {
   display: flex;
   align-items: flex-start;
   gap: 12px;
-  color: #00b42a;
+  color: var(--ui-status-success);
 }
 
 .error-result {
   display: flex;
   align-items: flex-start;
   gap: 12px;
-  color: #f53f3f;
+  color: var(--ui-status-error);
 }
 
 .result-content {
@@ -423,8 +390,12 @@ const {
 
 .result-message {
   margin-bottom: 8px;
-  font-size: 14px;
+  font-size: 16px;
   line-height: 1.5;
+}
+
+.pipeline-status {
+  margin: 0 0 8px;
 }
 
 .result-link {
@@ -447,12 +418,52 @@ const {
 .usage-list {
   list-style-type: disc;
   padding-left: 20px;
-  font-size: 14px;
+  font-size: 15px;
   line-height: 1.8;
   color: #666;
 }
 
 .usage-list li {
   margin-bottom: 6px;
+}
+
+.result-meta {
+  color: var(--ui-text-secondary);
+  font-size: 15px;
+}
+
+.result-state-icon {
+  display: inline-flex;
+  flex: 0 0 auto;
+  font-size: 20px;
+}
+
+@media (max-width: 700px) {
+  .bot-meta {
+    grid-template-columns: 1fr;
+  }
+
+  .bot-card {
+    padding: 16px;
+  }
+
+  .control-buttons,
+  .cache-controls {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .control-buttons > button,
+  .cache-controls > button {
+    width: 100%;
+  }
+
+  .search-input-group {
+    flex-direction: column;
+  }
+
+  .search-input-group > * {
+    width: 100%;
+  }
 }
 </style>

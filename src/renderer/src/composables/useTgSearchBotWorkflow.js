@@ -8,6 +8,8 @@ import {
   tgBotSyncHistory,
   tgBotGenerateDailyZip,
   tgInfoCacheStatus,
+  tgInfoCachePause,
+  tgInfoCacheResume,
 } from "../api/tgApi";
 
 export const useTgSearchBotWorkflow = ({ message }) => {
@@ -33,9 +35,13 @@ export const useTgSearchBotWorkflow = ({ message }) => {
   const syncResult = ref(null);
   const infoCacheStatusResult = ref(null);
   const dailyZipResult = ref(null);
+  const botStatusState = ref("unknown");
+  const botStatusError = ref("");
+  const isRefreshingBotStatus = ref(false);
 
   // 获取 Bot 状态
   const getBotStatus = async () => {
+    isRefreshingBotStatus.value = true;
     try {
       const result = await tgBotStatus();
       botStatus.value = result || {
@@ -45,8 +51,21 @@ export const useTgSearchBotWorkflow = ({ message }) => {
         historyFilePath: "",
         sourceChannelId: "",
       };
+      botStatusState.value = ["fresh", "stale", "unknown"].includes(
+        botStatus.value?.freshness,
+      )
+        ? botStatus.value.freshness
+        : "unknown";
+      botStatusError.value = "";
     } catch (error) {
-      console.error("获取 Bot 状态失败:", error);
+      botStatusState.value = "error";
+      botStatusError.value = error?.message || "无法读取 Bot 状态";
+      botStatus.value = {
+        ...botStatus.value,
+        freshness: "error",
+      };
+    } finally {
+      isRefreshingBotStatus.value = false;
     }
   };
 
@@ -56,6 +75,23 @@ export const useTgSearchBotWorkflow = ({ message }) => {
       infoCacheStatusResult.value = await tgInfoCacheStatus();
     } catch (error) {
       console.error("获取信息缓存状态失败:", error);
+    }
+  };
+
+  const handleToggleInfoCache = async () => {
+    const paused = infoCacheStatusResult.value?.hotCache?.paused === true;
+    try {
+      const result = paused
+        ? await tgInfoCacheResume()
+        : await tgInfoCachePause();
+      if (result?.success) {
+        message.success(paused ? "热缓存刷新已恢复" : "热缓存刷新已暂停");
+        await getInfoCacheStatusResult();
+      } else {
+        message.error(result?.error || "更新热缓存状态失败");
+      }
+    } catch (error) {
+      message.error(`更新热缓存状态失败: ${error.message}`);
     }
   };
 
@@ -196,6 +232,9 @@ export const useTgSearchBotWorkflow = ({ message }) => {
 
   return {
     botStatus,
+    botStatusState,
+    botStatusError,
+    isRefreshingBotStatus,
     isStarting,
     isStopping,
     isSearching,
@@ -211,6 +250,7 @@ export const useTgSearchBotWorkflow = ({ message }) => {
     infoCacheStatusResult,
     getBotStatus,
     getInfoCacheStatusResult,
+    handleToggleInfoCache,
     handleStartBot,
     handleStopBot,
     handleSearch,

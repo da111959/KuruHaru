@@ -22,7 +22,7 @@ const colClass = computed(() => {
   const classes = [];
   if (typeof props.cols === "number") {
     classes.push("col-span-" + props.cols);
-  } else if (props.cols == "auto") {
+  } else if (props.cols === "auto") {
     classes.push("col-auto");
   }
   if (props.span) classes.push("col-span-" + props.span);

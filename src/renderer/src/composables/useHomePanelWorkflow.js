@@ -239,10 +239,6 @@ export const useHomePanelWorkflow = ({ message, dialog }) => {
     lastScanTime.value = now;
     isLoading.value = true;
 
-    const loadingMessage = message.loading("正在连接 Telegram 扫描文件...", {
-      duration: 0,
-    });
-
     try {
       // 先展示现有缓存，再执行扫描并二次刷新，降低等待感知。
       console.log("🔥 SHOWING CACHED DATA FIRST");
@@ -252,31 +248,19 @@ export const useHomePanelWorkflow = ({ message, dialog }) => {
       const result = await tgScanRecentActivity();
       await refreshData();
 
-      loadingMessage.destroy();
-
       if (result && result.success) {
         const fileCount = historyList.value.length;
-        dialog.success({
-          title: "扫描完成",
-          content: `成功获取到 ${fileCount} 个文件`,
-          positiveText: "确定",
-        });
+        message.success(`扫描完成：成功获取到 ${fileCount} 个文件`);
       } else {
-        dialog.error({
-          title: "扫描失败",
-          content: result?.error || "未知错误，请检查网络连接或配置",
-          positiveText: "确定",
-        });
+        message.error(
+          `扫描失败：${result?.error || "未知错误，请检查网络连接或配置"}`,
+        );
       }
     } catch (e) {
-      loadingMessage.destroy();
-
       console.error("手动扫描失败:", e);
-      dialog.error({
-        title: "扫描出错",
-        content: e?.message || "扫描过程出错，请检查网络或控制台日志",
-        positiveText: "确定",
-      });
+      message.error(
+        `扫描出错：${e?.message || "扫描过程出错，请检查网络或控制台日志"}`,
+      );
     } finally {
       isLoading.value = false;
     }

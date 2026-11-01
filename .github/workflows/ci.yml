@@ -30,14 +30,14 @@ jobs:
       - name: Run Build
         run: npm run build
 
-  docs-check:
-    runs-on: ubuntu-latest
-    if: always()
+      - name: Run ESLint Guardrails
+        run: npm run lint
 
-    steps:
-      - uses: actions/checkout@v4
+      - name: Run Unit Tests
+        run: npm run test
 
-      - name: Check docs consistency
-        run: |
-          echo "=== Docs Consistency Check ==="
-          echo "✅ Docs consistency check complete"
+      - name: Check IPC Contracts
+        run: npm run verify:protocol
+
+      - name: Check Documentation and Config Template
+        run: npm run docs:config

@@ -377,23 +377,6 @@ async function getCachedMediaPath(record, channelId, cacheDir, cacheIndex) {
   }
 
   await fs.mkdir(cacheDir, { recursive: true });
-  const legacyCachePath = path.join(
-    cacheDir,
-    `${record.fileMessageId}-${cacheFileName}`,
-  );
-  try {
-    const legacyFile = await fs.stat(legacyCachePath);
-    if (legacyFile.size > 0) {
-      await fs.rm(cachePath, { force: true });
-      await fs.rename(legacyCachePath, cachePath);
-      cacheIndex.files[cacheFileName] = {
-        messageId: record.fileMessageId,
-      };
-      return cachePath;
-    }
-  } catch (error) {
-    if (error?.code !== "ENOENT") throw error;
-  }
 
   await fs.rm(cachePath, { force: true });
   const partialPath = `${cachePath}.part`;

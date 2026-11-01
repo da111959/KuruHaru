@@ -1,14 +1,19 @@
 import pathModule from "path";
-import { join } from "path";
 import fs from "fs";
+import crypto from "crypto";
 import { ipcMain, app, webContents } from "electron";
-import { scanForIds } from "../utils/archive-scanner";
+import { registerIpcHandler } from "../ipc/registry.js";
 import {
   login_ as asmrLogin_,
   checkLoginStatus_,
   logout_,
   triggerCloudDataFetch as syncCloudWorksDataFromLogin,
-} from "../modules/asmr-login";
+} from "../domains/asmr/auth-service";
+import {
+  getAsmrPassword,
+  getAsmrToken,
+  saveAsmrCredentials,
+} from "../domains/asmr/credential-store.js";
 import { getConfig, saveConfig } from "../modules/config";
 import { createLogSender } from "../utils/logger";
 import { getAsmrClient } from "./httpClient";
@@ -38,9 +43,16 @@ import {
   buildAsmrSearchApiUrl,
   detectAsmrApiMode,
   filterWorksByAfterDate,
-  mapWorksToRjFilterResult,
+  explainWorkFilterResults,
+  paginateItems,
+  createFilterSnapshotId,
 } from "./asmr-core/url-filter-utils";
-import { fetchAsmrPlaylistWorks } from "./asmr-core/playlist-fetch-utils";
+import {
+  diffFilterSnapshots,
+  listFilterSnapshots,
+  readFilterSnapshot,
+  saveFilterSnapshot,
+} from "./asmr-core/filter-snapshot-store";
 
 // 创建日志发送器
 const logger = createLogSender("asmr");
@@ -53,6 +65,108 @@ let fileLock = Promise.resolve();
 let scanLock = Promise.resolve();
 // HTTP 客户端
 let asmrHttpClient = null;
+const CLOUD_DELETE_SNAPSHOT_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+
+function cloudDeleteStorePath() {
+  return pathModule.join(app.getPath("userData"), "data", "cloud-delete-snapshots.json");
+}
+
+async function readCloudDeleteStore() {
+  try {
+    return JSON.parse(await fs.promises.readFile(cloudDeleteStorePath(), "utf8"));
+  } catch {
+    return { version: 1, previews: [], audits: [] };
+  }
+}
+
+async function writeCloudDeleteStore(store) {
+  const filePath = cloudDeleteStorePath();
+  await fs.promises.mkdir(pathModule.dirname(filePath), { recursive: true });
+  const tempPath = `${filePath}.${crypto.randomUUID()}.tmp`;
+  await fs.promises.writeFile(tempPath, JSON.stringify(store, null, 2), "utf8");
+  await fs.promises.rename(tempPath, filePath);
+}
+
+async function createCloudDeletePreview(payload = {}) {
+  const kind = payload.kind === "rj" ? "rj" : "works";
+  let ids = [...new Set((Array.isArray(payload.workIds) ? payload.workIds : []).map(String).filter(Boolean))];
+  const rjCodes = [...new Set((Array.isArray(payload.rjCodes) ? payload.rjCodes : []).map(String).map((v) => v.toUpperCase()).filter(Boolean))];
+  if (kind === "works" && !ids.length) return { success: false, error: "预览至少需要一个云端作品 ID" };
+  if (kind === "rj" && !rjCodes.length) return { success: false, error: "预览至少需要一个 RJ/VJ/BJ 编号" };
+  let notFound = [];
+  if (kind === "rj") {
+    try {
+      const resolved = await resolveRjCodesToWorkIds(rjCodes);
+      ids = resolved.matchedWorkIds;
+      notFound = resolved.notFoundRJ;
+    } catch (error) {
+      return { success: false, error: error?.message || String(error) };
+    }
+  }
+  const store = await readCloudDeleteStore();
+  const preview = {
+    id: crypto.randomUUID(),
+    kind,
+    workIds: ids,
+    rjCodes,
+    notFound,
+    createdAt: Date.now(),
+    status: "pending",
+  };
+  store.previews = [preview, ...(store.previews || [])].slice(0, 200);
+  await writeCloudDeleteStore(store);
+  return { success: true, preview };
+}
+
+async function deleteCloudWorksByIds(workIds = []) {
+  const config = getConfig();
+  const token = getAsmrToken() || config.asmr?.token;
+  const playlistId = config.asmr?.playlistId;
+  if (!token || !playlistId) return { success: false, error: "未配置登录信息" };
+  const headers = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
+  let deletedCount = 0;
+  const errors = [];
+  for (let index = 0; index < workIds.length; index += 100) {
+    const batch = workIds.slice(index, index + 100);
+    try {
+      const response = await asmrHttpClient.post(
+        "https://api.asmr.one/api/playlist/remove-works-from-playlist",
+        { id: playlistId, works: batch },
+        { headers, timeout: 30000 },
+      );
+      if (response.status === 200) deletedCount += batch.length;
+      else errors.push({ workIds: batch, error: `HTTP ${response.status}` });
+    } catch (error) {
+      errors.push({ workIds: batch, error: error?.message || String(error) });
+    }
+  }
+  return {
+    success: errors.length === 0,
+    partial: deletedCount > 0 && errors.length > 0,
+    deletedCount,
+    failedCount: errors.reduce((total, item) => total + item.workIds.length, 0),
+    errors,
+  };
+}
+
+async function resolveRjCodesToWorkIds(rjCodes = []) {
+  const config = getConfig();
+  const token = getAsmrToken() || config.asmr?.token;
+  const playlistId = config.asmr?.playlistId;
+  if (!token || !playlistId) throw new Error("未配置登录信息");
+  const headers = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
+  const allWorks = [];
+  for (let page = 1; page <= 200; page += 1) {
+    const response = await asmrHttpClient.get(
+      `https://api.asmr.one/api/playlist/get-playlist-works?id=${playlistId}&page=${page}&pageSize=100`,
+      { headers, timeout: 30000 },
+    );
+    const pageWorks = extractWorksArrayLite(response.data);
+    allWorks.push(...pageWorks);
+    if (pageWorks.length < 100) break;
+  }
+  return matchWorkIdsByRjCodesCaseInsensitive(allWorks, rjCodes);
+}
 
 // TXT文件路径（支持自定义配置）
 const getTxtPath = () => {
@@ -80,11 +194,6 @@ const getTxtPath = () => {
   return txtPath;
 };
 
-// 标签库缓存（1分钟有效）
-let tagsCache = null;
-let tagsCacheTime = 0;
-const TAGS_CACHE_TTL = 60000;
-
 /**
  * 触发获取云端列表（从 asmr-login.js 导入完整实现）
  */
@@ -92,11 +201,34 @@ export async function syncCloudWorksData() {
   return await syncCloudWorksDataFromLogin();
 }
 
-export function setupAsmrIPC(historyPath) {
+function registerFilterSnapshotHandlers(directory) {
+  registerIpcHandler("asmr-list-filter-snapshots", (_event, limit) =>
+    listFilterSnapshots(directory, limit),
+  );
+  registerIpcHandler("asmr-read-filter-snapshot", (_event, snapshotId) =>
+    readFilterSnapshot(directory, snapshotId),
+  );
+  registerIpcHandler(
+    "asmr-diff-filter-snapshots",
+    (_event, { previousId, currentId } = {}) => {
+      const previous = readFilterSnapshot(directory, previousId);
+      const current = readFilterSnapshot(directory, currentId);
+      if (!previous || !current) {
+        return { success: false, error: "筛选快照不存在或已失效" };
+      }
+      return { success: true, ...diffFilterSnapshots(previous, current) };
+    },
+  );
+}
+
+export function registerAsmrIpcHandlers() {
   // 初始化 HTTP 客户端
   if (!asmrHttpClient) {
     asmrHttpClient = getAsmrClient();
   }
+  registerFilterSnapshotHandlers(
+    pathModule.join(app.getPath("userData"), "data", "filter-snapshots"),
+  );
 
   // 发送带 Tag 的日志
   const sendLogToSender = (sender, msg) => {
@@ -106,17 +238,17 @@ export function setupAsmrIPC(historyPath) {
   };
 
   // 触发异步获取云端列表（登录成功后调用）
-  ipcMain.handle("asmr-trigger-cloud-data-fetch", async () => {
+  registerIpcHandler("asmr-trigger-cloud-data-fetch", async () => {
     return await syncCloudWorksData();
   });
 
   // 获取缓存的云端列表
-  ipcMain.handle("asmr-get-cached-cloud-works", async () => {
+  registerIpcHandler("asmr-get-cached-cloud-works", async () => {
     return { success: true, data: cloudWorksCache };
   });
 
   // 触发云端数据获取
-  ipcMain.handle("asmr-fetch-cloud-works", async () => {
+  registerIpcHandler("asmr-fetch-cloud-works", async () => {
     try {
       const result = await syncCloudWorksData();
       return result;
@@ -125,30 +257,16 @@ export function setupAsmrIPC(historyPath) {
     }
   });
 
-  // 监听云端列表更新事件（从 ipcMain 事件接收）
-  ipcMain.on("cloud-works-updated", (event, data) => {
-    if (data && data.data) {
+  // 广播云端作品列表更新到 ASMR 页面。
+  ipcMain.on("cloud-works-updated", (_event, data) => {
+    if (Array.isArray(data?.data)) {
       cloudWorksCache = data.data;
-      logger.info(`云端列表缓存已更新，共 ${cloudWorksCache.length} 个作品`);
-      // 发送到所有前端窗口
-      const allContents = webContents.getAllWebContents();
-      allContents.forEach((contents) => {
+      for (const contents of webContents.getAllWebContents()) {
         if (!contents.isDestroyed()) {
           contents.send("cloud-works-updated", { data: cloudWorksCache });
         }
-      });
-    }
-  });
-
-  // 监听登录成功事件，广播到前端
-  app.on("asmr-logged-in", () => {
-    logger.info("登录成功事件触发，广播到前端");
-    const allContents = webContents.getAllWebContents();
-    allContents.forEach((contents) => {
-      if (!contents.isDestroyed()) {
-        contents.send("asmr-logged-in");
       }
-    });
+    }
   });
 
   // 自动登录（应用启动时）
@@ -156,11 +274,30 @@ export function setupAsmrIPC(historyPath) {
     try {
       const config = await getConfig();
 
+      // Migrate legacy plaintext ASMR credentials once, then remove them from
+      // the ordinary config file before using them for startup login.
+      if (config.asmr?.password || config.asmr?.token) {
+        try {
+          const legacyPassword = config.asmr.password;
+          const legacyToken = config.asmr.token;
+          saveAsmrCredentials({
+            password: legacyPassword,
+            token: legacyToken,
+          });
+          await saveConfig({
+            asmr: { ...config.asmr, password: "", token: "" },
+            paths: config.paths,
+          });
+        } catch (error) {
+          logger.warn(`ASMR 凭据迁移失败: ${error?.message || "系统凭据存储不可用"}`);
+        }
+      }
+
       // 检查是否保存了 ASMR 登录信息
       if (
         !config.asmr ||
         !config.asmr.username ||
-        !config.asmr.password ||
+        !getAsmrPassword() ||
         !config.asmr.playlistId
       ) {
         logger.info("未保存 ASMR 登录信息，跳过自动登录");
@@ -172,7 +309,7 @@ export function setupAsmrIPC(historyPath) {
       // 自动登录
       const loginResult = await asmrLogin_(null, {
         username: config.asmr.username,
-        password: config.asmr.password,
+        password: getAsmrPassword(),
         playlistId: config.asmr.playlistId,
       });
 
@@ -191,129 +328,6 @@ export function setupAsmrIPC(historyPath) {
 
   // 调用自动登录
   autoLoginOnStartup();
-
-  // 1. 加载标签库（带缓存，1分钟有效）
-  ipcMain.handle("load-tag-db", async () => {
-    try {
-      const now = Date.now();
-
-      // 检查缓存
-      if (tagsCache && now - tagsCacheTime < TAGS_CACHE_TTL) {
-        logger.debug("[Tags] 使用缓存的标签库");
-        return tagsCache;
-      }
-
-      const config = getConfig();
-
-      let tagsFilePath = null;
-
-      if (config.paths && config.paths.tagsDir) {
-        const tagsDir = config.paths.tagsDir.trim();
-
-        // 检查是否是完整文件路径（以 .json 结尾）
-        if (tagsDir.endsWith(".json")) {
-          // 已经是完整文件路径，直接使用
-          tagsFilePath = tagsDir;
-        } else {
-          // 是目录路径，拼上文件名
-          tagsFilePath = pathModule.join(tagsDir, "tags.json");
-        }
-      }
-
-      const paths = [];
-      if (tagsFilePath && fs.existsSync(tagsFilePath)) {
-        paths.push(tagsFilePath);
-      }
-      paths.push(
-        join(process.cwd(), "config", "tags.json"),
-        join(process.resourcesPath, "config", "tags.json"),
-      );
-
-      let target = paths.find((p) => fs.existsSync(p));
-
-      if (!target) {
-        return { success: false, msg: "未找到 tags.json" };
-      }
-
-      const tagsData = JSON.parse(fs.readFileSync(target, "utf-8"));
-
-      // 更新缓存
-      tagsCache = Array.isArray(tagsData) ? tagsData : tagsData || {};
-      tagsCacheTime = now;
-      logger.info(
-        `[Tags] 标签库已加载并缓存 (${Object.keys(tagsCache).length} 个标签)`,
-      );
-
-      if (Array.isArray(tagsData)) {
-        return tagsCache;
-      } else if (typeof tagsData === "object" && tagsData !== null) {
-        return tagsCache;
-      }
-
-      return {};
-    } catch (e) {
-      console.error("加载标签库失败:", e.message);
-      return { success: false, msg: e.message };
-    }
-  });
-
-  // 2. 获取播放列表（并发获取所有页面）
-  ipcMain.handle(
-    "asmr-fetch-playlist",
-    async (event, { token, playlistId }) => {
-      return await fetchAsmrPlaylistWorks({
-        httpClient: asmrHttpClient,
-        token,
-        playlistId,
-        sendLog: (message) => sendLogToSender(event.sender, message),
-      });
-    },
-  );
-
-  // 3. 扫描本地文件夹（RJ号）
-  ipcMain.handle("scan-local-ids", async (event, { path: dirPath }) => {
-    try {
-      sendLogToSender(event.sender, `🔍 开始扫描本地文件夹: ${dirPath}`);
-
-      const fileList = [];
-      scanForIds(dirPath, fileList);
-
-      console.log(`[ASMR] 扫描完成，找到 ${fileList.length} 个文件`);
-      sendLogToSender(
-        event.sender,
-        `✅ 扫描完成，找到 ${fileList.length} 个作品文件`,
-      );
-
-      if (fileList.length > 0) {
-        sendLogToSender(event.sender, `📋 扫描到的文件（前10个）：`);
-        fileList.slice(0, 10).forEach((file) => {
-          sendLogToSender(
-            event.sender,
-            `   - ${file.code || "(无RJ号)"}: ${file.name}`,
-          );
-        });
-      }
-
-      return fileList;
-    } catch (e) {
-      console.error("[ASMR] 扫描失败:", e);
-      sendLogToSender(event.sender, `❌ 扫描失败: ${e.message}`);
-      return [];
-    }
-  });
-
-  // 4. 获取历史记录
-  ipcMain.handle("get-upload-history", async () => {
-    if (!fs.existsSync(historyPath)) return [];
-    try {
-      const records = JSON.parse(fs.readFileSync(historyPath, "utf-8"));
-      logger.info(`读取历史记录: ${records.length} 条`);
-      return records;
-    } catch (e) {
-      logger.error("读取历史记录失败:", e.message);
-      return [];
-    }
-  });
 
   // 5. 通过 RJ 号删除作品（不依赖云端数据）
   ipcMain.on(
@@ -487,226 +501,43 @@ export function setupAsmrIPC(historyPath) {
   );
 
   // 7. 登录 - 使用统一的登录工具
-  ipcMain.handle("asmr-login", async (event, params) => {
+  registerIpcHandler("asmr-login", async (event, params) => {
     return await asmrLogin_(event.sender, params);
   });
 
   // 检查登录状态
-  ipcMain.handle("asmr-check-login", async () => {
+  registerIpcHandler("asmr-check-login", async () => {
     return await checkLoginStatus_();
   });
 
   // 退出登录
-  ipcMain.handle("asmr-logout", async () => {
+  registerIpcHandler("asmr-logout", async () => {
     return await logout_();
   });
 
-  // 删除云端作品（直接执行，不走事件）
-  ipcMain.handle("asmr-delete-works", async (event, workIds) => {
-    try {
-      const config = getConfig();
-      const token = config.asmr?.token;
-      const playlistId = config.asmr?.playlistId;
+  registerIpcHandler("asmr-cloud-delete-preview", async (_event, payload) =>
+    createCloudDeletePreview(payload),
+  );
 
-      if (!token || !playlistId) {
-        return { success: false, error: "未配置登录信息" };
-      }
-
-      const headers = {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json",
-      };
-
-      logger.info(`开始删除 ${workIds.length} 个云端作品...`);
-
-      const batchSize = 100;
-      let success = 0;
-      let fail = 0;
-
-      for (let i = 0; i < Math.ceil(workIds.length / batchSize); i++) {
-        const batch = workIds.slice(i * batchSize, (i + 1) * batchSize);
-        logger.info(`处理第 ${i + 1} 批 (${batch.length}个)...`);
-
-        try {
-          const res = await asmrHttpClient.post(
-            "https://api.asmr.one/api/playlist/remove-works-from-playlist",
-            { id: playlistId, works: batch },
-            { headers, timeout: 30000 },
-          );
-
-          if (res.status === 200) {
-            success += batch.length;
-            logger.info(`第 ${i + 1} 批成功`);
-          } else {
-            fail += batch.length;
-            logger.warn(`第 ${i + 1} 批失败: HTTP ${res.status}`);
-          }
-        } catch (e) {
-          fail += batch.length;
-          logger.error(`第 ${i + 1} 批异常: ${e.message}`);
-        }
-
-        await new Promise((r) => setTimeout(r, 1000));
-      }
-
-      logger.info(`删除完成: 成功 ${success}, 失败 ${fail}`);
-      return { success: fail === 0, deletedCount: success, failedCount: fail };
-    } catch (error) {
-      logger.error("删除云端作品失败:", error.message);
-      return { success: false, error: error.message };
+  registerIpcHandler("asmr-cloud-delete-execute", async (_event, previewId) => {
+    const store = await readCloudDeleteStore();
+    const preview = (store.previews || []).find((item) => item.id === previewId);
+    if (!preview) return { success: false, error: "云端删除预览不存在或已过期" };
+    if (preview.status !== "pending") return { success: false, error: "该云端删除预览已执行，不允许重复提交" };
+    if (Date.now() - preview.createdAt > CLOUD_DELETE_SNAPSHOT_MAX_AGE_MS) {
+      return { success: false, error: "云端删除预览已过期，请重新预览" };
     }
-  });
+    preview.status = "executing";
+    await writeCloudDeleteStore(store);
 
-  // 删除本地文件
-  ipcMain.handle("asmr-delete-local-files", async (_event, filePaths) => {
-    const fs = await import("fs");
-    let deletedCount = 0;
-    let failedCount = 0;
-
-    for (const filePath of filePaths) {
-      try {
-        if (fs.existsSync(filePath)) {
-          fs.unlinkSync(filePath);
-          deletedCount++;
-          logger.info(`已删除本地文件: ${filePath}`);
-        } else {
-          logger.warn(`文件不存在: ${filePath}`);
-          failedCount++;
-        }
-      } catch (e) {
-        logger.error(`删除文件失败: ${filePath}, ${e.message}`);
-        failedCount++;
-      }
-    }
-
-    return {
-      success: failedCount === 0,
-      deletedCount,
-      failedCount,
-      error: failedCount > 0 ? `${failedCount} 个文件删除失败` : null,
-    };
-  });
-
-  // 根据 RJ 号删除云端作品（本地清理用）
-  // 注意：API remove-works-by-rj 返回 404，改用传统方法：获取播放列表→匹配RJ→workId删除
-  ipcMain.handle("asmr-delete-by-rj", async (event, rjCodes) => {
-    try {
-      const config = getConfig();
-      const token = config.asmr?.token;
-      const playlistId = config.asmr?.playlistId;
-
-      if (!token || !playlistId) {
-        return { success: false, error: "未配置登录信息" };
-      }
-
-      const headers = {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json",
-      };
-
-      logger.info(`开始通过 RJ 号删除 ${rjCodes.length} 个云端作品...`);
-      logger.info(`使用播放列表: ${playlistId}`);
-
-      // 步骤1: 获取播放列表所有作品（分页获取全部）
-      logger.info("获取云端播放列表...");
-      let allWorks = [];
-      let page = 1;
-      const pageSize = 100;
-      let hasMore = true;
-
-      while (hasMore) {
-        const playlistUrl = `https://api.asmr.one/api/playlist/get-playlist-works?id=${playlistId}&page=${page}&pageSize=${pageSize}`;
-        let playlistRes;
-        try {
-          playlistRes = await asmrHttpClient.get(playlistUrl, {
-            headers,
-            timeout: 30000,
-          });
-        } catch (e) {
-          logger.error(`获取播放列表第 ${page} 页失败:`, e.message);
-          return { success: false, error: "获取播放列表失败: " + e.message };
-        }
-
-        // 提取当前页作品
-        const pageWorks = extractWorksArrayLite(playlistRes.data);
-
-        allWorks = allWorks.concat(pageWorks);
-        logger.info(`第 ${page} 页: 获取到 ${pageWorks.length} 个作品`);
-
-        // 如果当前页数量少于 pageSize，说明已到最后一页
-        if (pageWorks.length < pageSize) {
-          hasMore = false;
-        } else {
-          page++;
-        }
-      }
-
-      logger.info(`总计获取到 ${allWorks.length} 个云端作品`);
-
-      // 步骤2: 匹配 RJ 号到 workId
-      const { matchedWorkIds, notFoundRJ } =
-        matchWorkIdsByRjCodesCaseInsensitive(allWorks, rjCodes);
-
-      if (notFoundRJ.length > 0) {
-        logger.warn(`未找到云端作品: ${notFoundRJ.join(", ")}`);
-      }
-
-      if (matchedWorkIds.length === 0) {
-        logger.warn("没有匹配到任何云端作品");
-        return {
-          success: true,
-          deletedCount: 0,
-          failedCount: 0,
-          notFound: notFoundRJ,
-        };
-      }
-
-      logger.info(`匹配到 ${matchedWorkIds.length} 个作品，开始删除...`);
-
-      // 步骤3: 使用 workId 删除
-      let success = 0;
-      let fail = 0;
-
-      const batchSize = 50;
-      for (let i = 0; i < Math.ceil(matchedWorkIds.length / batchSize); i++) {
-        const batch = matchedWorkIds.slice(i * batchSize, (i + 1) * batchSize);
-        logger.info(`删除第 ${i + 1} 批 (${batch.length}个作品)...`);
-
-        try {
-          const deleteRes = await asmrHttpClient.post(
-            "https://api.asmr.one/api/playlist/remove-works-from-playlist",
-            { id: playlistId, works: batch },
-            { headers, timeout: 30000 },
-          );
-
-          if (deleteRes.status === 200) {
-            success += batch.length;
-            logger.info(`第 ${i + 1} 批删除成功`);
-          } else {
-            fail += batch.length;
-            logger.warn(`第 ${i + 1} 批删除失败: HTTP ${deleteRes.status}`);
-          }
-        } catch (e) {
-          fail += batch.length;
-          logger.error(`第 ${i + 1} 批异常: ${e.message}`);
-        }
-
-        await new Promise((r) => setTimeout(r, 1000));
-      }
-
-      logger.info(
-        `RJ号删除完成: 成功 ${success}, 失败 ${fail}, 未找到 ${notFoundRJ.length}`,
-      );
-      return {
-        success: fail === 0,
-        deletedCount: success,
-        failedCount: fail,
-        notFound: notFoundRJ,
-      };
-    } catch (error) {
-      logger.error("RJ号删除失败:", error.message);
-      return { success: false, error: error.message };
-    }
+    let result;
+    result = await deleteCloudWorksByIds(preview.workIds);
+    result.notFound = preview.notFound || [];
+    preview.status = "executed";
+    preview.executedAt = Date.now();
+    store.audits = [{ previewId, ...result, executedAt: preview.executedAt }, ...(store.audits || [])].slice(0, 500);
+    await writeCloudDeleteStore(store);
+    return { ...result, previewId };
   });
 
   // 默认路径
@@ -741,10 +572,11 @@ const extractLocalizedRjCodesFromPage = (works) => {
 };
 
 // 7. 获取汉化作品列表（带字幕/多语种）
-ipcMain.handle("asmr-fetch-chinese-works", async (event, options = {}) => {
+export function registerAsmrStandaloneHandlers() {
+registerIpcHandler("asmr-fetch-chinese-works", async (event, options = {}) => {
   const { stopCondition = 5 } = options;
   const config = getConfig();
-  const token = config.asmr?.token;
+  const token = getAsmrToken() || config.asmr?.token;
   const sender = event.sender;
 
   // 检查是否已有扫描在进行
@@ -965,7 +797,7 @@ ipcMain.handle("asmr-fetch-chinese-works", async (event, options = {}) => {
 });
 
 // 设置汉化列表TXT文件路径
-ipcMain.handle("asmr-set-chinese-list-path", async (event, txtPath) => {
+registerIpcHandler("asmr-set-chinese-list-path", async (event, txtPath) => {
   try {
     logger.info(`设置汉化列表路径: "${txtPath}" (类型: ${typeof txtPath})`);
     if (!txtPath || typeof txtPath !== "string" || txtPath.trim() === "") {
@@ -1013,7 +845,7 @@ ipcMain.handle("asmr-set-chinese-list-path", async (event, txtPath) => {
 });
 
 // 获取当前汉化列表路径
-ipcMain.handle("asmr-get-chinese-list-path", async () => {
+registerIpcHandler("asmr-get-chinese-list-path", async () => {
   const txtPath = getTxtPath();
   const config = getConfig();
   const isCustom = !!config.paths?.chineseListPath?.trim();
@@ -1021,7 +853,7 @@ ipcMain.handle("asmr-get-chinese-list-path", async () => {
 });
 
 // 读取TXT文件内容
-ipcMain.handle("asmr-read-chinese-list", async () => {
+registerIpcHandler("asmr-read-chinese-list", async () => {
   const txtPath = getTxtPath();
   try {
     if (fs.existsSync(txtPath)) {
@@ -1037,7 +869,7 @@ ipcMain.handle("asmr-read-chinese-list", async () => {
 });
 
 // 写入TXT文件内容
-ipcMain.handle("asmr-write-chinese-list", async (event, rjCodes = []) => {
+registerIpcHandler("asmr-write-chinese-list", async (event, rjCodes = []) => {
   try {
     const normalizedCodes = Array.isArray(rjCodes) ? rjCodes : [];
     await writeLocalizedWorksList(normalizedCodes);
@@ -1053,9 +885,54 @@ ipcMain.handle("asmr-write-chinese-list", async (event, rjCodes = []) => {
 // 从URL获取并筛选RJ号
 const handleFilterRjFromUrl = async (
   event,
-  { url, dateMode, beforeDate, compareFilePath },
+  {
+    url,
+    dateMode,
+    beforeDate,
+    compareFilePath,
+    page = 1,
+    pageSize = 100,
+    snapshotId,
+  },
 ) => {
   try {
+    const snapshotDirectory = pathModule.join(
+      app.getPath("userData"),
+      "data",
+      "filter-snapshots",
+    );
+    if (snapshotId) {
+      const snapshot = readFilterSnapshot(snapshotDirectory, snapshotId);
+      if (!snapshot) {
+        return { success: false, msg: "筛选快照不存在或已失效" };
+      }
+      const paginated = paginateItems(snapshot.results, { page, pageSize });
+      return {
+        success: true,
+        data: paginated.items.filter((item) => item.status === "included"),
+        results: paginated.items,
+        pagination: {
+          page: paginated.page,
+          pageSize: paginated.pageSize,
+          total: paginated.total,
+          totalPages: paginated.totalPages,
+        },
+        snapshot: {
+          id: snapshot.id,
+          createdAt: snapshot.createdAt,
+          input: snapshot.input,
+          summary: snapshot.summary,
+        },
+        total: snapshot.summary.included,
+        filtered: snapshot.summary.included,
+        excluded:
+          snapshot.summary.alreadyExists +
+          snapshot.summary.filteredOut +
+          snapshot.summary.invalid,
+        summary: snapshot.summary,
+      };
+    }
+    const dateFilteredOut = [];
     logger.info(`开始筛选RJ号: ${url}`);
     logger.info(`日期模式: ${dateMode}, 日期: ${beforeDate}`);
     logger.info(`比对文件: ${compareFilePath || "无"}`);
@@ -1114,6 +991,7 @@ const handleFilterRjFromUrl = async (
         works,
         beforeDate,
       );
+      dateFilteredOut.push(...filteredOut);
       works = filteredWorks;
 
       logger.info(
@@ -1140,17 +1018,63 @@ const handleFilterRjFromUrl = async (
     }
 
     // 筛选出不存在于 TXT 的作品号
-    const filteredWorks = works.filter(
+    const includedWorks = works.filter(
       (work) => !existingWorkCodes.has(getWorkComparableRjNumber(work)),
     );
 
-    logger.info(`TXT比对后剩余 ${filteredWorks.length} 个作品号`);
+    logger.info(`TXT比对后剩余 ${includedWorks.length} 个作品号`);
+    const results = explainWorkFilterResults({
+      works,
+      existingCodes: existingWorkCodes,
+      dateFilteredOut,
+      compareEnabled: Boolean(compareFilePath),
+    });
+    const snapshotCreatedAt = new Date().toISOString();
+    const normalizedInput = {
+      url,
+      dateMode: dateMode || "all",
+      beforeDate: beforeDate || null,
+      comparison: Boolean(compareFilePath),
+      compareFilePath: compareFilePath || null,
+    };
+    const snapshot = {
+      id: createFilterSnapshotId(normalizedInput, snapshotCreatedAt),
+      createdAt: snapshotCreatedAt,
+      input: normalizedInput,
+      summary: {
+        included: results.filter((item) => item.status === "included").length,
+        alreadyExists: results.filter((item) => item.status === "already_exists").length,
+        filteredOut: results.filter((item) => item.status === "filtered_out").length,
+        invalid: results.filter((item) => item.status === "invalid").length,
+      },
+      results,
+    };
+    const snapshotSave = saveFilterSnapshot(snapshotDirectory, snapshot);
+    if (!snapshotSave.success) {
+      logger.warn(`筛选快照保存失败: ${snapshotSave.error}`);
+    }
+    const paginated = paginateItems(results, { page, pageSize });
 
     return {
       success: true,
-      data: mapWorksToRjFilterResult(filteredWorks),
+      data: paginated.items.filter((item) => item.status === "included"),
+      results: paginated.items,
+      pagination: {
+        page: paginated.page,
+        pageSize: paginated.pageSize,
+        total: paginated.total,
+        totalPages: paginated.totalPages,
+      },
+      snapshot: {
+        id: snapshot.id,
+        createdAt: snapshot.createdAt,
+        input: snapshot.input,
+        summary: snapshot.summary,
+      },
       total: works.length,
-      filtered: filteredWorks.length,
+      filtered: includedWorks.length,
+      excluded: results.filter((item) => item.status !== "included").length,
+      summary: snapshot.summary,
     };
   } catch (e) {
     logger.error("筛选RJ号失败:", e.message);
@@ -1158,8 +1082,8 @@ const handleFilterRjFromUrl = async (
   }
 };
 
-ipcMain.handle("filter-rj-from-url", handleFilterRjFromUrl);
-ipcMain.handle("filter_rj_from_url", handleFilterRjFromUrl);
+registerIpcHandler("filter-rj-from-url", handleFilterRjFromUrl);
+registerIpcHandler("filter_rj_from_url", handleFilterRjFromUrl);
 
 // 直接请求搜索API（使用代理）
 async function fetchSearchFromPage(_client, url, beforeDate) {
@@ -1529,4 +1453,6 @@ async function fetchSearchFromPage(_client, url, beforeDate) {
     logger.error(`备用方法失败: ${e.message}`);
     return [];
   }
+}
+
 }

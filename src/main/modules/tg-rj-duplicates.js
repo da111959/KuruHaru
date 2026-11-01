@@ -10,11 +10,10 @@
  * 4. 对于重复的RJ号，保留最新的一对，标记旧的对为删除
  */
 
-import { TelegramClient } from "telegram";
-import { StringSession } from "telegram/sessions";
-import { createSilentGramJsLogger } from "../utils/gramjs-logger";
 import { ipcMain } from "electron";
-import { getConfig } from "./config";
+import path from "path";
+import { getConfig, getDataDir } from "./config";
+import { createRjDuplicateAuditStore } from "./rj-duplicate-audit-store.js";
 import { normalizePeerEntityInput } from "./tg-common-core/peer-entity";
 import { getTelegramMessageText } from "./tg-common-core/message-text";
 import {
@@ -33,8 +32,10 @@ const logger = createLogSender("tg-rj-duplicates");
 
 // 全局状态
 let telegramClient = null;
-let isConnected = false;
 let lastScanMessageMeta = new Map();
+const auditStore = createRjDuplicateAuditStore({
+  filePath: path.join(getDataDir(), "rj-duplicate-audit.json"),
+});
 
 // DLsite Info Bot 标识
 const DLSITE_INFO_BOT = {
@@ -52,30 +53,10 @@ const DELETE_BATCH_SIZE = 100;
  * 获取连接的客户端 (单例模式)
  */
 async function getConnectedClient() {
-  const config = await getConfig();
-  const { apiId, apiHash, session } = config.tg;
-
-  if (!apiId || !apiHash || !session) {
-    throw new Error("TG 配置不完整，请在设置中检查。");
-  }
-
-  if (!isConnected || !telegramClient) {
-    logger.debug("正在初始化 Telegram 客户端连接...");
-    telegramClient = new TelegramClient(
-      new StringSession(session),
-      Number(apiId),
-      apiHash,
-      {
-        connectionRetries: 2,
-        useWSS: false,
-        baseLogger: createSilentGramJsLogger(),
-      },
-    );
-    telegramClient.setLogLevel("none");
-    await telegramClient.connect();
-    isConnected = true;
-    logger.debug("Telegram 客户端已连接");
-  }
+  const { requireConnectedTelegramClient } = await import(
+    "../utils/telegram-login"
+  );
+  telegramClient = await requireConnectedTelegramClient();
   return telegramClient;
 }
 
@@ -83,17 +64,18 @@ async function getConnectedClient() {
  * 解析 Entity (群组/频道对象)
  */
 async function resolveEntity(_client, chatIdInput) {
+  const client = _client || telegramClient;
   const peerId = normalizePeerEntityInput(chatIdInput);
 
   try {
-    return await telegramClient.getEntity(peerId);
+    return await client.getEntity(peerId);
   } catch {
     logger.warn(`本地缓存未找到 ID ${chatIdInput}，正在刷新对话列表...`);
   }
 
   try {
-    await telegramClient.getDialogs({ limit: 100 });
-    return await telegramClient.getEntity(peerId);
+    await client.getDialogs({ limit: 100 });
+    return await client.getEntity(peerId);
   } catch (e) {
     logger.error(`无法解析群组 ID: ${chatIdInput}，原因: ${e.message}`);
     throw new Error(
@@ -776,11 +758,43 @@ async function scanRjDuplicates(options) {
 
     logger.info(`扫描完成，找到 ${duplicateGroups} 个重复RJ号组`);
 
-    const normalizedResults = results.map((pair) => ({
-      ...pair,
-      userMessage: ensureMessageIdField(pair.userMessage),
-      botMessage: ensureMessageIdField(pair.botMessage),
-    }));
+    const normalizedResults = results.map((pair) => {
+      const userMessage = ensureMessageIdField(pair.userMessage);
+      const botMessage = ensureMessageIdField(pair.botMessage);
+      const newerPair = results.find(
+        (candidate) =>
+          candidate.rjCode === pair.rjCode &&
+          new Date(candidate.userMessage?.date).getTime() >
+            new Date(pair.userMessage?.date).getTime(),
+      );
+      const keptPair = results.find(
+        (candidate) =>
+          candidate.rjCode === pair.rjCode && candidate.keepStatus === "keep",
+      );
+      return {
+        ...pair,
+        userMessage,
+        botMessage,
+        source: {
+          userChatId: normalizeChatIdFromPayload(userMessage),
+          botChatId: normalizeChatIdFromPayload(botMessage),
+          userSenderType: userMessage?.senderInfo?.type || "unknown",
+          botSenderType: botMessage?.senderInfo?.type || null,
+        },
+        timeDifferenceMs:
+          botMessage?.date && userMessage?.date
+            ? Math.abs(new Date(botMessage.date) - new Date(userMessage.date))
+            : null,
+        keepReason:
+          pair.keepStatus === "delete" && keptPair
+            ? newerPair
+              ? `同编号存在更新配对（消息 ${keptPair.userMessage.id}），按保留最新规则列为删除候选`
+              : `同编号保留配对消息 ${keptPair.userMessage.id}；两者时间相同，按原排序优先级保留`
+            : pair.keepStatus === "keep"
+              ? "该编号最新的消息配对，按保留最新规则保留"
+              : "该编号当前唯一配对，保留",
+      };
+    });
 
     const scanMessageMeta = new Map();
     for (const row of normalizedResults) {
@@ -861,9 +875,20 @@ async function scanRjDuplicates(options) {
       `[接口日志] tg-scan-rj-duplicates 返回: success=true, rows=${normalizedResults.length}, toDelete=${messagesToDelete}, sampleUserMessageIds=${sampleUserMessageIds}, sampleUserSenderIds=${sampleUserSenderIds}, sampleUserSenderNames=${sampleUserSenderNames}, sampleBotSenderIds=${sampleBotSenderIds}, sampleBotSenderNames=${sampleBotSenderNames}`,
     );
 
+    const scanSnapshot = await auditStore.createScanSnapshot({
+      rows: normalizedResults,
+      channelId: channelIdStr,
+      statistics: {
+        totalScanned: messages.length,
+        duplicateRJs: duplicateGroups,
+        messagesToDelete,
+      },
+    });
+
     return {
       success: true,
       duplicates: normalizedResults,
+      snapshotId: scanSnapshot.id,
       statistics: {
         totalScanned: messages.length,
         duplicateRJs: duplicateGroups,
@@ -883,7 +908,10 @@ async function scanRjDuplicates(options) {
 /**
  * 删除指定的重复消息
  */
-async function deleteDuplicateMessages(messageIds) {
+async function deleteDuplicateMessages(
+  messageIds,
+  messageMetaById = lastScanMessageMeta,
+) {
   try {
     const config = await getConfig();
     const channelIdStr = config.tg.channel;
@@ -929,7 +957,7 @@ async function deleteDuplicateMessages(messageIds) {
     const errors = [];
     const entityCache = new Map();
     const messageStates = normalizedMessageIds.map((messageId) => {
-      const meta = lastScanMessageMeta.get(messageId) || null;
+      const meta = messageMetaById.get(messageId) || null;
 
       return {
         messageId,
@@ -1336,6 +1364,60 @@ async function deleteDuplicateMessages(messageIds) {
   }
 }
 
+async function createDuplicateDeletePreview({ snapshotId, messageIds } = {}) {
+  try {
+    const preview = await auditStore.createDeletePreview({ snapshotId, messageIds });
+    return { success: true, preview };
+  } catch (error) {
+    return { success: false, error: error?.message || String(error) };
+  }
+}
+
+async function executeDuplicateDeletePreview(previewId) {
+  try {
+    const preview = await auditStore.claimExecution(previewId);
+    const targetIds = preview.targets.map((target) => target.messageId);
+    const messageMetaById = new Map(
+      preview.targets.map((target) => [
+        target.messageId,
+        {
+          ...(target.metadata || {}),
+          senderType: target.metadata?.senderType || "unknown",
+          sourceChatId: target.metadata?.chatId || null,
+          rjCode: target.rjCode,
+          associationMethod: target.associationMethod,
+          senderId: target.metadata?.senderId || null,
+          forwardFromPeerId: target.metadata?.forwardFromPeerId || null,
+          forwardChannelPostId: target.metadata?.forwardChannelPostId || null,
+          replyToTopId: target.metadata?.replyToTopId || null,
+          isPost: target.metadata?.isPost || false,
+        },
+      ]),
+    );
+    try {
+      const result = await deleteDuplicateMessages(targetIds, messageMetaById);
+      await auditStore.recordExecution(previewId, result);
+      return { ...result, previewId };
+    } catch (error) {
+      const result = {
+        success: false,
+        error: error?.message || String(error),
+        deletedCount: 0,
+        errors: [],
+      };
+      await auditStore.recordExecution(previewId, result);
+      return { ...result, previewId };
+    }
+  } catch (error) {
+    return {
+      success: false,
+      error: error?.message || String(error),
+      deletedCount: 0,
+      errors: [],
+    };
+  }
+}
+
 // ==========================================
 // IPC 通信注册
 // ==========================================
@@ -1343,7 +1425,12 @@ async function deleteDuplicateMessages(messageIds) {
 export function setupRjDuplicatesIPC() {
   logger.debug("[tg-rj-duplicates] initializing IPC handlers...");
 
-  const handlers = ["tg-scan-rj-duplicates", "tg-delete-duplicate-messages"];
+  const handlers = [
+    "tg-scan-rj-duplicates",
+    "tg-rj-duplicate-preview",
+    "tg-rj-duplicate-execute",
+    "tg-rj-duplicate-export",
+  ];
 
   for (const handler of handlers) {
     try {
@@ -1367,18 +1454,20 @@ export function setupRjDuplicatesIPC() {
     return result;
   });
 
-  // 删除重复消息
-  ipcMain.handle("tg-delete-duplicate-messages", async (_event, messageIds) => {
-    logger.debug(
-      `IPC: tg-delete-duplicate-messages 请求数量=${Array.isArray(messageIds) ? messageIds.length : 0}`,
-    );
+  ipcMain.handle("tg-rj-duplicate-preview", async (_event, payload) =>
+    createDuplicateDeletePreview(payload),
+  );
 
-    const result = await deleteDuplicateMessages(messageIds);
+  ipcMain.handle("tg-rj-duplicate-execute", async (_event, previewId) =>
+    executeDuplicateDeletePreview(previewId),
+  );
 
-    logger.debug(
-      `IPC: tg-delete-duplicate-messages 响应 success=${result.success} deleted=${result.deletedCount || 0} errors=${Array.isArray(result.errors) ? result.errors.length : 0}`,
-    );
-    return result;
+  ipcMain.handle("tg-rj-duplicate-export", async () => {
+    try {
+      return { success: true, data: await auditStore.exportAudit() };
+    } catch (error) {
+      return { success: false, error: error?.message || String(error) };
+    }
   });
 
   logger.debug("[tg-rj-duplicates] IPC handlers registered");

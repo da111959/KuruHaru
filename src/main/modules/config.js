@@ -2,159 +2,36 @@ import fs from "fs";
 import path from "path";
 import { app, ipcMain } from "electron";
 import { createLogSender } from "../utils/logger";
+import {
+  createDefaultConfig,
+  mergeConfigValues,
+  redactConfigSecrets,
+} from "../../shared/config-contract.mjs";
+import {
+  getTelegramCredentials,
+  saveTelegramCredentials,
+  getAria2Secret,
+  saveAria2Secret,
+} from "../domains/asmr/credential-store.js";
 
-// 默认配置文件路径
+// Runtime paths are the only values that cannot live in the static contract.
 const DEFAULT_CONFIG_PATH = path.join(app.getPath("userData"), "config.json");
+const getRuntimePaths = () => ({
+  dataDir: path.join(app.getPath("userData"), "data"),
+  logsDir: path.join(app.getPath("userData"), "logs"),
+  tgDownloadDir: path.join(app.getPath("documents"), "KuruHaruDownloads"),
+  uploadHistoryDir: path.join(
+    app.getPath("userData"),
+    "data",
+    "upload_history",
+  ),
+});
+const buildDefaultConfig = () => createDefaultConfig(getRuntimePaths());
 
 // 配置缓存
 let configCache = null;
 let configCacheTime = 0;
 const CACHE_TTL = 5000; // 5秒缓存
-
-/**
- * 获取默认配置
- */
-const DEFAULT_CONFIG = {
-  // 用户配置
-  profile: {
-    username: "User",
-    avatar: null,
-    status: "online",
-    lastActive: null,
-  },
-  tg: {
-    apiId: "",
-    apiHash: "",
-    phone: "",
-    session: "",
-    discussion: "",
-    channel: "",
-    botToken: "",
-    searchChannelId: "",
-    prePackagePath: "",
-    prePackageLink: "",
-    botAllowedUsers: [],
-    botAllowedChats: [],
-    botMode: "polling",
-    botWebhookUrl: "",
-    botWebhookPort: 8443,
-    botSearchLimit: 3000,
-    botHistoryPath: "",
-    translationQueueCachePath: "",
-    translationQueueCacheRefreshMs: 300000,
-    searchRetryQueuePath: "",
-    searchRetryDelayMs: 60000,
-    searchRetryMaxAttempts: 0,
-    botAutoStartOnStartup: true,
-    botAutoSyncOnStartup: true,
-    botSyncSearchCacheOnUpload: true,
-    botWhitelistDebugLog: false,
-    dailyZipOutputDir: "",
-    infoCachePath: "",
-    infoRequestTimeoutMs: 20000,
-    infoCacheMaxConcurrency: 5,
-    infoCacheMaxFileSizeMB: 50,
-    infoCachePersistOnFetch: true,
-    infoHotCacheEnabled: true,
-    infoHotCacheIntervalMs: 3600000,
-    infoHotCacheActiveIntervalMs: 1200000,
-    infoHotCacheCoolIntervalMs: 10800000,
-    infoHotCacheActiveWindowMs: 86400000,
-    infoHotCacheCoolAfterMs: 259200000,
-    infoHotCachePageSize: 100,
-    infoHotCacheStartupDelayMs: 1500,
-    proxyUrl: "",
-  },
-  asmr: {
-    username: "",
-    password: "",
-    token: "",
-    playlistId: "",
-    translationQueuePlaylistId: "",
-    downloadRpcUrl: "http://localhost:6800/jsonrpc",
-    downloadRpcSecret: "",
-    downloadUseAria2: true,
-    downloadTestMode: false,
-    downloadMaxAutoTasksPerWork: 20,
-    downloadFilterVideoFormats: true,
-    proxyUrl: "",
-  },
-  paths: {
-    configDir: "",
-    sourceDir: "",
-    toolOutputDir: "",
-    asmrDownloadDir: "",
-    whisperTargetPath: "",
-    dataDir: path.join(app.getPath("userData"), "data"),
-    logsDir: path.join(app.getPath("userData"), "logs"),
-    chineseListPath: undefined,
-    tgDownloadDir: path.join(app.getPath("documents"), "KuruHaruDownloads"),
-    uploadHistoryDir: path.join(
-      app.getPath("userData"),
-      "data",
-      "upload_history",
-    ),
-  },
-  // 上传配置
-  upload: {
-    channelId: "",
-  },
-  // 视频翻译配置
-  whisper: {
-    exePath: "",
-    targetPath: "",
-    subFormats: ["lrc"],
-  },
-  workflow: {
-    comfyParityMode: true,
-  },
-  translationAutomation: {
-    enabled: false,
-    runOnStartup: true,
-    scanIntervalMs: 1800000,
-    recentOrder: "create_date",
-    recentPageSize: 100,
-    recentMaxPages: 3,
-    maxWorksPerCycle: 3,
-    maxDownloadTasksPerWork: 200,
-    aria2RestartMaxAttempts: 3,
-    aria2RestartCooldownMs: 300000,
-    aria2EarlyRetryPercent: 80,
-    includeTags: [],
-    excludeTags: [],
-    requireAllIncludeTags: false,
-    startHour: 1,
-    endHour: 7,
-    downloadWaitTimeoutMs: 21600000,
-    downloadPollIntervalMs: 30000,
-    downloadStablePolls: 2,
-    whisperStallTimeoutMs: 600000,
-    whisperActivityPollMs: 15000,
-    cleanupLocalAfterUpload: true,
-    packageDirName: "_translated_packages",
-  },
-  // 日志配置
-  logging: {
-    level: "info",
-    enableFileLog: true,
-  },
-  // 系统配置
-  system: {
-    theme: "auto",
-    language: "zh",
-    autoStart: false,
-    minimizeToTray: true,
-    windowFrameMode: "custom",
-    saveCustomPaths: true,
-    proxyUrl: "",
-    windowOpacity: 0.92,
-    blurEnabled: true,
-    blurIntensity: 8,
-    blurRenderMode: "system",
-    accentColor: "#adb571",
-  },
-};
-
 // 创建日志发送器
 const logger = createLogSender("config");
 const getDataDirLogKeys = new Set();
@@ -176,6 +53,22 @@ function toErrorMessage(error) {
   return String(error ?? "未知错误");
 }
 
+function hydrateCredentialConfig(config) {
+  const next = config || buildDefaultConfig();
+  const telegram = getTelegramCredentials();
+  const legacyTg = next.tg || {};
+  if (legacyTg.apiHash || legacyTg.session || legacyTg.botToken) {
+    try { saveTelegramCredentials({ apiHash: legacyTg.apiHash, session: legacyTg.session, botToken: legacyTg.botToken }); } catch { /* keep runtime value */ }
+  }
+  const aria2Secret = getAria2Secret();
+  if (next.asmr?.downloadRpcSecret) {
+    try { saveAria2Secret(next.asmr.downloadRpcSecret); } catch { /* keep runtime value */ }
+  }
+  next.tg = { ...legacyTg, ...Object.fromEntries(Object.entries(telegram).filter(([, value]) => value)) };
+  next.asmr = { ...(next.asmr || {}), downloadRpcSecret: aria2Secret || next.asmr?.downloadRpcSecret || "" };
+  return next;
+}
+
 /**
  * 读取配置（带缓存，5秒有效）
  */
@@ -190,7 +83,7 @@ export function getConfig() {
   try {
     const userDataPath = app.getPath("userData");
     const defaultConfigPath = path.join(userDataPath, "config.json");
-    const projectConfigPath = path.join(process.cwd(), "config", "config.json");
+    const projectConfigPath = path.join(process.resourcesPath || process.cwd(), "config", "config.json");
 
     // 1. 读取 AppData 配置
     let appDataConfig = null;
@@ -228,21 +121,7 @@ export function getConfig() {
         const userConfig = JSON.parse(fs.readFileSync(userConfigPath, "utf-8"));
 
         // 合并所有配置，userConfig 优先级最高
-        configCache = {
-          profile: { ...DEFAULT_CONFIG.profile, ...userConfig.profile },
-          tg: { ...DEFAULT_CONFIG.tg, ...userConfig.tg },
-          asmr: { ...DEFAULT_CONFIG.asmr, ...userConfig.asmr },
-          paths: { ...DEFAULT_CONFIG.paths, ...userConfig.paths },
-          upload: { ...DEFAULT_CONFIG.upload, ...userConfig.upload },
-          whisper: { ...DEFAULT_CONFIG.whisper, ...userConfig.whisper },
-          workflow: { ...DEFAULT_CONFIG.workflow, ...userConfig.workflow },
-          translationAutomation: {
-            ...DEFAULT_CONFIG.translationAutomation,
-            ...userConfig.translationAutomation,
-          },
-          logging: { ...DEFAULT_CONFIG.logging, ...userConfig.logging },
-          system: { ...DEFAULT_CONFIG.system, ...userConfig.system },
-        };
+        configCache = hydrateCredentialConfig(mergeConfigPatch(buildDefaultConfig(), userConfig));
         configCacheTime = now;
         return configCache;
       }
@@ -250,34 +129,20 @@ export function getConfig() {
 
     // 5. 使用 AppData 配置
     if (appDataConfig) {
-      configCache = {
-        profile: { ...DEFAULT_CONFIG.profile, ...appDataConfig.profile },
-        tg: { ...DEFAULT_CONFIG.tg, ...appDataConfig.tg },
-        asmr: { ...DEFAULT_CONFIG.asmr, ...appDataConfig.asmr },
-        paths: { ...DEFAULT_CONFIG.paths, ...appDataConfig.paths },
-        upload: { ...DEFAULT_CONFIG.upload, ...appDataConfig.upload },
-        whisper: { ...DEFAULT_CONFIG.whisper, ...appDataConfig.whisper },
-        workflow: { ...DEFAULT_CONFIG.workflow, ...appDataConfig.workflow },
-        translationAutomation: {
-          ...DEFAULT_CONFIG.translationAutomation,
-          ...appDataConfig.translationAutomation,
-        },
-        logging: { ...DEFAULT_CONFIG.logging, ...appDataConfig.logging },
-        system: { ...DEFAULT_CONFIG.system, ...appDataConfig.system },
-      };
+      configCache = hydrateCredentialConfig(mergeConfigPatch(buildDefaultConfig(), appDataConfig));
       configCacheTime = now;
       return configCache;
     }
 
     // 6. 如果都没有配置，返回默认配置
-    configCache = { ...DEFAULT_CONFIG };
+    configCache = hydrateCredentialConfig(buildDefaultConfig());
     configCacheTime = now;
     return configCache;
   } catch (e) {
     logger.error(`Config read error: ${toErrorMessage(e)}`);
-    configCache = DEFAULT_CONFIG;
+    configCache = hydrateCredentialConfig(buildDefaultConfig());
     configCacheTime = Date.now();
-    return DEFAULT_CONFIG;
+    return configCache;
   }
 }
 
@@ -309,7 +174,7 @@ export function getConfigPath() {
  * 获取日志文件路径
  */
 export function getLogPath(module) {
-  const config = getDefaultConfig();
+  const config = getConfig();
   const logsDir =
     config.paths.logsDir || path.join(app.getPath("userData"), "logs");
 
@@ -331,6 +196,7 @@ export function getLogPath(module) {
  */
 // 配置保存锁，防止并发写入
 let saveConfigLock = Promise.resolve();
+let persistedConfigSignature = "";
 
 function normalizeConfigDir(rawConfigDir) {
   if (typeof rawConfigDir !== "string") {
@@ -368,10 +234,7 @@ function mergeConfigPatch(currentConfig, newConfig) {
       ? newConfig
       : {};
 
-  const finalConfig = {
-    ...currentConfig,
-    ...patchConfig,
-  };
+  const finalConfig = mergeConfigValues(currentConfig, patchConfig);
 
   const normalizedPaths = normalizePathPatch(patchConfig.paths);
   finalConfig.paths = {
@@ -379,7 +242,25 @@ function mergeConfigPatch(currentConfig, newConfig) {
     ...normalizedPaths,
   };
 
+  // Template files intentionally keep user-editable paths blank. Preserve
+  // those blanks, but restore the internal upload-history path required by
+  // runtime consumers when older/template configs omit it.
+  if (!String(finalConfig.paths?.uploadHistoryDir || "").trim()) {
+    finalConfig.paths.uploadHistoryDir = getRuntimePaths().uploadHistoryDir;
+  }
+
   return finalConfig;
+}
+
+function removeRedactedSecrets(value) {
+  if (Array.isArray(value)) return value.map(removeRedactedSecrets);
+  if (!value || typeof value !== "object") return value;
+  const next = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (typeof item === "string" && item === "[REDACTED]") continue;
+    next[key] = removeRedactedSecrets(item);
+  }
+  return next;
 }
 
 function resolveConfigSavePath(config) {
@@ -439,11 +320,32 @@ export async function saveConfig(newConfig) {
     logger.info(`当前 chineseListPath: ${current.paths?.chineseListPath}`);
 
     // 允许显式清空路径（空字符串 / null），并在本次保存中生效。
-    const final = mergeConfigPatch(current, newConfig);
+    const incoming = newConfig && typeof newConfig === "object" ? newConfig : {};
+    try {
+      if (incoming.tg) saveTelegramCredentials(incoming.tg);
+      if (incoming.asmr?.downloadRpcSecret) saveAria2Secret(incoming.asmr.downloadRpcSecret);
+    } catch (credentialError) {
+      logger.warn(`敏感配置未能写入系统凭据存储: ${toErrorMessage(credentialError)}`);
+    }
+    const final = mergeConfigPatch(current, removeRedactedSecrets(incoming));
+    const persisted = JSON.parse(JSON.stringify(final));
+    if (persisted.tg) {
+      persisted.tg.apiHash = "";
+      persisted.tg.session = "";
+      persisted.tg.botToken = "";
+    }
+    if (persisted.asmr) persisted.asmr.downloadRpcSecret = "";
+    const nextPersistedSignature = JSON.stringify(persisted);
+    if (nextPersistedSignature === persistedConfigSignature) {
+      configCache = final;
+      configCacheTime = Date.now();
+      return true;
+    }
     const configPath = resolveConfigSavePath(final);
     logger.info(`准备保存配置，configPath: ${configPath}`);
 
-    writeJsonFileSync(configPath, final);
+    writeJsonFileSync(configPath, persisted);
+    persistedConfigSignature = nextPersistedSignature;
 
     // 自定义 configDir 模式下，保持 AppData 里有 configDir 指针用于下次启动发现配置。
     if (configPath !== DEFAULT_CONFIG_PATH) {
@@ -454,15 +356,10 @@ export async function saveConfig(newConfig) {
     configCache = final;
     configCacheTime = Date.now();
 
-    const hasSystemPatch =
-      newConfig &&
-      typeof newConfig === "object" &&
-      !Array.isArray(newConfig) &&
-      Object.prototype.hasOwnProperty.call(newConfig, "system");
     const didSystemSettingsChange =
       JSON.stringify(current.system || {}) !==
       JSON.stringify(final.system || {});
-    if (hasSystemPatch || didSystemSettingsChange) {
+    if (didSystemSettingsChange) {
       // 只要请求里包含 system 补丁就重应用，避免“保存成功但视觉不刷新”的体感问题。
       app.emit("config-updated");
     }
@@ -525,7 +422,7 @@ export function getDataDir() {
  * 获取默认配置（不读取文件）
  */
 export function getDefaultConfig() {
-  return DEFAULT_CONFIG;
+  return buildDefaultConfig();
 }
 
 /**
@@ -558,7 +455,17 @@ export function setupConfigIPC() {
 
   ipcMain.handle("get-config", () => {
     const config = getConfig();
-    return { success: true, data: config };
+    const safeConfig = redactConfigSecrets(config);
+    const rendererConfig = {
+      ...safeConfig,
+      asmr: {
+        ...safeConfig.asmr,
+        password: "",
+        token: "",
+        downloadRpcSecret: "",
+      },
+    };
+    return { success: true, data: rendererConfig };
   });
 
   // 通用保存配置
@@ -571,25 +478,10 @@ export function setupConfigIPC() {
     }
   });
 
-  // ASMR 相关
-  ipcMain.handle("get-asmr-config", () => {
-    const config = getConfig();
-    return { success: true, data: config.asmr };
-  });
-
-  ipcMain.handle("save-asmr-config", async (_event, _asmrConfig) => {
-    try {
-      const result = await saveConfig({ asmr: _asmrConfig });
-      return { success: result };
-    } catch (_e) {
-      return { success: false, error: _e.message };
-    }
-  });
-
   // Telegram 相关
   ipcMain.handle("get-tg-config", () => {
     const config = getConfig();
-    return { success: true, data: config.tg };
+    return { success: true, data: redactConfigSecrets(config.tg) };
   });
 
   ipcMain.handle("save-tg-config", async (_event, _tgConfig) => {
@@ -619,7 +511,7 @@ export function setupConfigIPC() {
   // Upload 相关
   ipcMain.handle("get-upload-config", () => {
     const config = getConfig();
-    return { success: true, data: config.upload };
+    return { success: true, data: redactConfigSecrets(config.upload) };
   });
 
   ipcMain.handle("save-upload-config", async (_event, upload) => {
@@ -634,7 +526,7 @@ export function setupConfigIPC() {
   // Whisper 相关
   ipcMain.handle("get-whisper-config", () => {
     const config = getConfig();
-    return { success: true, data: config.whisper };
+    return { success: true, data: redactConfigSecrets(config.whisper) };
   });
 
   ipcMain.handle("save-whisper-config", async (event, whisper) => {

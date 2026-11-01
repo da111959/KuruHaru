@@ -14,11 +14,3 @@ export function getHistoryEntryUrl(historyEntry) {
   return "";
 }
 
-export function getHistoryEntryAlternateUrls(historyEntry) {
-  if (!historyEntry || typeof historyEntry !== "object") return [];
-  if (!Array.isArray(historyEntry.alternateUrls)) return [];
-
-  return historyEntry.alternateUrls
-    .map((url) => String(url || "").trim())
-    .filter(Boolean);
-}

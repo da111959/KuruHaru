@@ -1,4 +1,12 @@
-import { ref, computed, onMounted, provide } from "vue";
+import {
+  ref,
+  computed,
+  watch,
+  onMounted,
+  onBeforeUnmount,
+  nextTick,
+  provide,
+} from "vue";
 import {
   NAV_GROUP_STORAGE_KEY,
   NAV_RECENT_STORAGE_KEY,
@@ -13,30 +21,13 @@ import { useTgAuthBridge } from "./useTgAuthBridge";
 import { useWindowShellState } from "./useWindowShellState";
 import { useWindowManualResize } from "./useWindowManualResize";
 
-const LEGACY_VIEW_ALIASES = Object.freeze({
-  workflow: "workflow.templates",
-  "workflow-designer": "workflow.designer",
-});
-
-const DISABLED_VIEW_KEYS = new Set([
-  "workflow.templates",
-  "workflow.designer",
-  "workflow.runtime",
-  "workflow.docs",
-]);
-
 const normalizeViewKey = (rawValue) => {
   const normalized = String(rawValue || "").trim();
   if (!normalized) {
     return "";
   }
 
-  const resolved = LEGACY_VIEW_ALIASES[normalized] || normalized;
-  if (DISABLED_VIEW_KEYS.has(resolved)) {
-    return "home";
-  }
-
-  return resolved;
+  return normalized;
 };
 
 const normalizeAccentColor = (rawValue) => {
@@ -75,6 +66,17 @@ const resolveInitialViewFromLocation = () => {
     return "";
   }
 };
+
+const isKnownView = (viewKey) =>
+  viewKey === "home" ||
+  ["local-clean", "cloud-clean"].includes(viewKey) ||
+  standaloneMenuItems.some((item) => item.key === viewKey) ||
+  menuGroups.some((group) =>
+    group.items.some(
+      (item) =>
+        item.key === viewKey || item.children?.some((child) => child.key === viewKey),
+    ),
+  );
 
 const createThemeTokens = ({ isDark, accentColor }) => {
   if (isDark) {
@@ -158,20 +160,16 @@ const createThemeTokens = ({ isDark, accentColor }) => {
 
 export const useAppShellController = () => {
   const requestedInitialView = resolveInitialViewFromLocation();
-  const defaultView = requestedInitialView || "home";
+  const defaultView = isKnownView(requestedInitialView) ? requestedInitialView : "home";
   const currentView = ref(defaultView);
-  const sidebarCollapsed = ref(defaultView === "workflow.designer");
+  const sidebarCollapsed = ref(false);
+  const sidebarOpen = ref(false);
+  const collapsedOpenGroup = ref(null);
+  const isNarrowWindow = ref(false);
+  const sidebarTrigger = ref(null);
 
   const { userAvatarBase64, defaultAvatarBase64, loadUserConfig } =
     useProfileBootstrap();
-
-  const { pendingAuthData } = useTgAuthBridge({
-    onAuthRequired: () => {
-      currentView.value = "settings";
-    },
-  });
-
-  provide("pendingAuthData", pendingAuthData);
 
   const {
     isActive,
@@ -183,7 +181,7 @@ export const useAppShellController = () => {
     ensureGroupExpandedByView,
     restoreExpandedGroups,
     restoreRecentViews,
-    handleMenuClick,
+    handleMenuClick: navigateMenuClick,
   } = useShellNavigation({
     currentView,
     standaloneMenuItems,
@@ -192,6 +190,14 @@ export const useAppShellController = () => {
     navGroupStorageKey: NAV_GROUP_STORAGE_KEY,
     navRecentStorageKey: NAV_RECENT_STORAGE_KEY,
   });
+
+  const { pendingAuthData } = useTgAuthBridge({
+    onAuthRequired: () => {
+      navigateMenuClick("settings");
+    },
+  });
+
+  provide("pendingAuthData", pendingAuthData);
 
   const {
     showCustomTitleBar,
@@ -220,7 +226,78 @@ export const useAppShellController = () => {
   });
 
   const toggleSidebar = () => {
+    if (isNarrowWindow.value) {
+      sidebarOpen.value = !sidebarOpen.value;
+      if (sidebarOpen.value) {
+        nextTick(() => document.querySelector(".sidebar-close")?.focus?.());
+      }
+      return;
+    }
     sidebarCollapsed.value = !sidebarCollapsed.value;
+    collapsedOpenGroup.value = null;
+  };
+
+  const toggleCollapsedGroup = (groupKey) => {
+    collapsedOpenGroup.value =
+      collapsedOpenGroup.value === groupKey ? null : groupKey;
+  };
+
+  const handleMenuClick = (key) => {
+    navigateMenuClick(key);
+    if (
+      key !== "clean" &&
+      isNarrowWindow.value
+    ) {
+      closeSidebar();
+    }
+  };
+
+  // Collapsed navigation uses an open flyout for group items. Close that
+  // transient menu as soon as a destination is chosen so it cannot remain
+  // pinned over the workspace after navigation.
+  const handleCollapsedMenuClick = (key, groupKey) => {
+    handleMenuClick(key);
+    if (groupKey) collapsedOpenGroup.value = null;
+  };
+
+  const closeSidebar = () => {
+    sidebarOpen.value = false;
+    nextTick(() => sidebarTrigger.value?.focus?.());
+  };
+
+  const handleEscape = (event) => {
+    if (event.key === "Escape") closeSidebar();
+  };
+
+  const handleSidebarKeydown = (event) => {
+    if (event.key !== "Tab" || !sidebarOpen.value || !isNarrowWindow.value) {
+      return;
+    }
+
+    const sidebar = event.currentTarget;
+    const focusable = Array.from(
+      sidebar.querySelectorAll(
+        'button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      ),
+    );
+    if (!focusable.length) return;
+
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  };
+
+  const updateNarrowWindow = () => {
+    isNarrowWindow.value =
+      typeof window !== "undefined" &&
+      window.matchMedia("(max-width: 1024px)").matches;
+    if (!isNarrowWindow.value) sidebarOpen.value = false;
   };
 
   onMounted(() => {
@@ -228,14 +305,10 @@ export const useAppShellController = () => {
       window.__appShell = {
         setView: (nextView) => {
           const normalizedView = normalizeViewKey(nextView);
-          if (!normalizedView) {
+          if (!normalizedView || !isKnownView(normalizedView)) {
             return currentView.value;
           }
-          currentView.value = normalizedView;
-          if (normalizedView === "workflow.designer") {
-            sidebarCollapsed.value = true;
-          }
-          ensureGroupExpandedByView(normalizedView);
+          navigateMenuClick(normalizedView);
           return currentView.value;
         },
       };
@@ -244,7 +317,25 @@ export const useAppShellController = () => {
     restoreExpandedGroups();
     restoreRecentViews();
     ensureGroupExpandedByView(currentView.value);
+    if (requestedInitialView !== currentView.value) {
+      const url = new URL(window.location.href);
+      url.searchParams.set("view", currentView.value);
+      window.history.replaceState({ view: currentView.value }, "", url);
+    }
     loadUserConfig();
+    updateNarrowWindow();
+    window.addEventListener("resize", updateNarrowWindow);
+    window.addEventListener("keydown", handleEscape);
+  });
+
+  onBeforeUnmount(() => {
+    window.removeEventListener("keydown", handleEscape);
+    window.removeEventListener("resize", updateNarrowWindow);
+  });
+
+  watch(currentView, (nextView, previousView) => {
+    if (nextView === previousView) return;
+    nextTick(() => document.querySelector("#main-content")?.focus?.());
   });
 
   const activeComponent = computed(() =>
@@ -254,6 +345,9 @@ export const useAppShellController = () => {
   return {
     currentView,
     sidebarCollapsed,
+    collapsedOpenGroup,
+    sidebarOpen,
+    sidebarTrigger,
     userAvatarBase64,
     defaultAvatarBase64,
     standaloneMenuItems,
@@ -265,7 +359,12 @@ export const useAppShellController = () => {
     isGroupExpanded,
     toggleGroup,
     handleMenuClick,
+    handleCollapsedMenuClick,
+    toggleCollapsedGroup,
     toggleSidebar,
+    closeSidebar,
+    isNarrowWindow,
+    handleSidebarKeydown,
     themeOverrides,
     showCustomTitleBar,
     windowShellClasses,

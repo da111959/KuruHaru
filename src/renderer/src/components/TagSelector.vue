@@ -5,7 +5,7 @@
       <span class="hint">{{ props.hint }}</span>
     </div>
     <div class="search-box">
-      <span class="search-icon">🔍</span>
+      <span class="search-icon" aria-hidden="true">⌕</span>
       <input
         v-model="searchText"
         type="text"
@@ -41,7 +41,7 @@
       class="selected-tags"
     >
       <div class="selected-header">
-        <span class="header-text">📋 已选:</span>
+        <span class="header-text">已选:</span>
         <button class="clear-all-btn" @click="clearAllTags">清除</button>
       </div>
       <div class="tag-badges">
@@ -71,7 +71,7 @@ const props = defineProps({
   // 统一对外暴露 include/exclude，便于上层直接拼接高级搜索参数。
   modelValue: { type: Object, default: () => ({ include: [], exclude: [] }) },
   // 通过标题/提示词实现复用：同一组件可承载普通标签和低愿力标签两种场景。
-  title: { type: String, default: "🏷️ 标签选择" },
+  title: { type: String, default: "标签选择" },
   hint: { type: String, default: "(可多选)" },
   searchPlaceholder: { type: String, default: "搜索标签..." },
 });
@@ -99,7 +99,7 @@ const {
     rgba(255, 253, 245, 0.08) 8%
   );
   border: 1px solid var(--comp-border);
-  border-radius: 16px;
+  border-radius: var(--ui-radius-md, 10px);
   padding: 16px;
   color: var(--comp-text);
 }
@@ -128,7 +128,7 @@ const {
     rgba(255, 253, 245, 0.08) 8%
   );
   border: 1px solid var(--comp-control-border);
-  border-radius: 12px;
+  border-radius: var(--ui-radius-sm, 6px);
   margin-bottom: 12px;
 }
 .search-icon,
@@ -159,7 +159,7 @@ const {
     rgba(255, 253, 245, 0.1) 24%
   );
   border: 1px solid var(--comp-divider);
-  border-radius: 12px;
+  border-radius: var(--ui-radius-sm, 6px);
   padding: 12px;
 }
 .tags-grid {
@@ -179,11 +179,12 @@ const {
     rgba(255, 253, 245, 0.08) 8%
   );
   border: 1px solid var(--comp-control-border);
-  border-radius: 999px;
+  border-radius: var(--ui-radius-sm, 6px);
   cursor: pointer;
   color: var(--comp-text);
   transition: all 0.18s ease;
 }
+.tag-item input { width: 16px; height: 16px; margin: 0; flex: 0 0 16px; }
 .tag-item:hover {
   background: color-mix(
     in srgb,
@@ -193,20 +194,15 @@ const {
   border-color: color-mix(in srgb, var(--comp-accent) 30%, transparent);
 }
 .tag-item.selected {
-  background: linear-gradient(
-    135deg,
-    color-mix(in srgb, var(--comp-accent) 92%, #cbd39c 8%),
-    color-mix(in srgb, var(--comp-accent) 72%, #7f8750 28%)
-  );
-  border-color: color-mix(in srgb, var(--comp-accent) 58%, transparent);
-  color: #fffdf4;
-  box-shadow: 0 10px 20px
-    color-mix(in srgb, var(--comp-accent) 20%, transparent);
+  background: color-mix(in srgb, var(--comp-accent) 12%, var(--comp-control-bg));
+  border-color: var(--comp-accent);
+  color: var(--comp-text);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--comp-accent) 18%, transparent);
 }
 .tag-item.excluded {
-  background: color-mix(in srgb, #7e4d4d 78%, #221414 22%);
-  border-color: color-mix(in srgb, #c98b8b 42%, transparent);
-  color: #fffdf4;
+  background: color-mix(in srgb, var(--ui-action-danger, #b42318) 8%, var(--comp-control-bg));
+  border-color: var(--ui-action-danger, #b42318);
+  color: var(--ui-action-danger, #b42318);
 }
 .tag-item input {
   accent-color: var(--comp-accent);
@@ -223,7 +219,7 @@ const {
     rgba(255, 253, 245, 0.1) 18%
   );
   border: 1px solid var(--comp-divider);
-  border-radius: 12px;
+  border-radius: var(--ui-radius-sm, 6px);
   padding: 12px;
   margin-top: 12px;
 }
@@ -255,21 +251,19 @@ const {
   gap: 6px;
   min-height: 28px;
   padding: 4px 10px;
-  border-radius: 999px;
+  border-radius: var(--ui-radius-sm, 6px);
   font-size: 12px;
   font-weight: 700;
 }
 .tag-badge.include {
-  background: linear-gradient(
-    135deg,
-    color-mix(in srgb, var(--comp-accent) 92%, #cbd39c 8%),
-    color-mix(in srgb, var(--comp-accent) 72%, #7f8750 28%)
-  );
-  color: #fffdf4;
+  background: color-mix(in srgb, var(--comp-accent) 12%, var(--comp-control-bg));
+  color: var(--comp-text);
+  border: 1px solid color-mix(in srgb, var(--comp-accent) 35%, var(--comp-control-border));
 }
 .tag-badge.exclude {
-  background: color-mix(in srgb, #7e4d4d 78%, #221414 22%);
-  color: #fffdf4;
+  background: color-mix(in srgb, var(--ui-action-danger, #b42318) 8%, var(--comp-control-bg));
+  color: var(--ui-action-danger, #b42318);
+  border: 1px solid color-mix(in srgb, var(--ui-action-danger, #b42318) 42%, transparent);
 }
 .tag-badge button {
   border: none;

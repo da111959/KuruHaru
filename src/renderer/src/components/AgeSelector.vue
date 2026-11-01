@@ -69,7 +69,7 @@ watch(
     rgba(255, 253, 245, 0.08) 8%
   );
   border: 1px solid var(--comp-border);
-  border-radius: 16px;
+  border-radius: var(--ui-radius-md, 10px);
   padding: 16px;
 }
 .selector-header {
@@ -99,13 +99,10 @@ watch(
   align-items: center;
   min-height: 28px;
   padding: 4px 10px;
-  border-radius: 999px;
-  background: linear-gradient(
-    135deg,
-    color-mix(in srgb, var(--comp-accent) 92%, #cbd39c 8%),
-    color-mix(in srgb, var(--comp-accent) 72%, #7f8750 28%)
-  );
-  color: #fffdf4;
+  border-radius: var(--ui-radius-sm, 6px);
+  background: color-mix(in srgb, var(--comp-accent) 12%, var(--comp-control-bg));
+  border: 1px solid color-mix(in srgb, var(--comp-accent) 35%, var(--comp-control-border));
+  color: var(--comp-text);
   font-size: 12px;
   font-weight: 700;
 }
@@ -120,7 +117,7 @@ watch(
     rgba(255, 253, 245, 0.08) 8%
   );
   border: 1px solid var(--comp-control-border);
-  border-radius: 12px;
+  border-radius: var(--ui-radius-sm, 6px);
   cursor: pointer;
   transition: all 0.18s ease;
   color: var(--comp-text);
@@ -129,18 +126,14 @@ watch(
   border-color: color-mix(in srgb, var(--comp-accent) 30%, transparent);
 }
 .age-option.active {
-  background: linear-gradient(
-    135deg,
-    color-mix(in srgb, var(--comp-accent) 92%, #cbd39c 8%),
-    color-mix(in srgb, var(--comp-accent) 72%, #7f8750 28%)
-  );
-  border-color: color-mix(in srgb, var(--comp-accent) 58%, transparent);
-  color: #fffdf4;
+  background: color-mix(in srgb, var(--comp-accent) 12%, var(--comp-control-bg));
+  border-color: var(--comp-accent);
+  color: var(--comp-text);
 }
 .age-option.exclude.active {
-  background: color-mix(in srgb, #7e4d4d 78%, #221414 22%);
-  border-color: color-mix(in srgb, #c98b8b 42%, transparent);
-  color: #fffdf4;
+  background: color-mix(in srgb, var(--ui-action-danger, #b42318) 8%, var(--comp-control-bg));
+  border-color: var(--ui-action-danger, #b42318);
+  color: var(--ui-action-danger, #b42318);
 }
 .age-option input[type="radio"] {
   margin-right: 10px;
@@ -150,3 +143,4 @@ watch(
   accent-color: #c98b8b;
 }
 </style>
+

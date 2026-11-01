@@ -128,13 +128,22 @@ export function buildSubtitleCompletenessReport({
     )
     .map((item) => getDisplayRelativePath(item));
 
+  const hasUnmatched = unmatchedSubtitleFiles.length > 0;
+  const unmatchedMessage = hasUnmatched
+    ? `存在 ${unmatchedSubtitleFiles.length} 个未匹配音频的字幕文件`
+    : "";
+
   return {
     totalAudioCount: audioFiles.length,
     totalSubtitleCount: subtitleFiles.length,
     matchedAudioCount: audioFiles.length - missingSubtitleFiles.length,
     missingSubtitleFiles,
     unmatchedSubtitleFiles,
-    isComplete: missingSubtitleFiles.length === 0,
+    hasUnmatched,
+    unmatchedMessage,
+    isComplete:
+      audioFiles.length === 0 ||
+      (missingSubtitleFiles.length === 0 && unmatchedSubtitleFiles.length === 0),
     skippedAudioValidation: audioFiles.length === 0,
   };
 }
@@ -144,12 +153,18 @@ export function formatSubtitleCompletenessMessage(report = {}) {
   const missingSubtitleFiles = Array.isArray(report.missingSubtitleFiles)
     ? report.missingSubtitleFiles
     : [];
+  const unmatchedSubtitleFiles = Array.isArray(report.unmatchedSubtitleFiles)
+    ? report.unmatchedSubtitleFiles
+    : [];
 
   if (totalAudioCount === 0) {
     return "未检测到音频文件，跳过音频-字幕完整性校验";
   }
 
   if (missingSubtitleFiles.length === 0) {
+    if (unmatchedSubtitleFiles.length > 0) {
+      return `存在 ${unmatchedSubtitleFiles.length} 个未匹配音频的字幕文件，已跳过打包`;
+    }
     return `音频与字幕已完整匹配，共 ${totalAudioCount} 个音频文件`;
   }
 

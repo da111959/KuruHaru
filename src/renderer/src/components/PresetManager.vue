@@ -1,7 +1,11 @@
 <template>
   <div class="preset-manager">
     <div class="preset-header">
-      <span class="label">💾 预设管理</span>
+      <div>
+        <span class="section-kicker">SAVED FILTERS</span>
+        <span class="label">预设管理</span>
+      </div>
+      <span class="preset-count">{{ presets.length }} 个</span>
     </div>
 
     <!-- 保存/更新预设 -->
@@ -47,14 +51,16 @@
         </div>
         <div class="preset-actions">
           <button
+            type="button"
             class="update-btn"
             title="用当前条件更新"
+            aria-label="用当前条件更新预设"
             @click.stop="updatePreset(preset)"
           >
             ✏️
           </button>
-          <button class="delete-btn" @click.stop="deletePreset(index)">
-            ✕
+          <button type="button" class="delete-btn" aria-label="删除预设" @click.stop="deletePreset(index)">
+            删除
           </button>
         </div>
       </div>
@@ -66,7 +72,10 @@
   </div>
 </template>
 <script setup>
+import { createDialog } from "../utils/ui-feedback";
 import { usePresetManagerWorkflow } from "../composables/usePresetManagerWorkflow";
+
+const dialog = createDialog();
 
 const props = defineProps({
   presetsData: { type: Array, default: () => [] },
@@ -94,26 +103,27 @@ const {
   deletePreset,
   savePreset,
   updatePreset,
-} = usePresetManagerWorkflow({ props, emit });
+} = usePresetManagerWorkflow({ props, emit, dialog });
 </script>
 <style scoped>
 .preset-manager {
-  background: color-mix(
-    in srgb,
-    var(--comp-surface-1) 92%,
-    rgba(255, 253, 245, 0.08) 8%
-  );
+  background: var(--ui-surface);
   border: 1px solid var(--comp-border);
-  border-radius: 16px;
+  border-radius: var(--ui-radius-md);
   padding: 16px;
 }
 .preset-header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
   margin-bottom: 12px;
 }
+.section-kicker { display: block; margin-bottom: 3px; color: var(--ui-action-primary); font: 700 10px/1.2 ui-monospace, SFMono-Regular, Consolas, monospace; letter-spacing: .12em; }
 .label {
   font-weight: 700;
-  color: var(--comp-text);
+  color: var(--ui-text-primary);
 }
+.preset-count { color: var(--ui-text-secondary); font-size: 12px; }
 .preset-save {
   display: flex;
   gap: 8px;
@@ -124,15 +134,11 @@ const {
   min-height: 40px;
   padding: 8px 12px;
   border: 1px solid var(--comp-control-border);
-  border-radius: 12px;
+  border-radius: var(--ui-radius-sm);
   outline: none;
   font-size: 13px;
-  background: color-mix(
-    in srgb,
-    var(--comp-control-bg) 92%,
-    rgba(255, 253, 245, 0.08) 8%
-  );
-  color: var(--comp-text);
+  background: var(--ui-surface-raised);
+  color: var(--ui-text-primary);
 }
 .preset-input::placeholder {
   color: var(--comp-muted);
@@ -140,14 +146,10 @@ const {
 .save-btn {
   min-height: 40px;
   padding: 8px 16px;
-  border: 1px solid color-mix(in srgb, var(--comp-accent) 56%, transparent);
-  border-radius: 12px;
-  background: linear-gradient(
-    135deg,
-    color-mix(in srgb, var(--comp-accent) 92%, #cbd39c 8%),
-    color-mix(in srgb, var(--comp-accent) 72%, #7f8750 28%)
-  );
-  color: #fffdf4;
+  border: 1px solid var(--ui-action-primary);
+  border-radius: var(--ui-radius-sm);
+  background: var(--ui-action-primary);
+  color: #fff;
   cursor: pointer;
   font-size: 13px;
   font-weight: 700;
@@ -165,24 +167,14 @@ const {
   align-items: center;
   gap: 8px;
   padding: 10px 12px;
-  background: color-mix(
-    in srgb,
-    var(--comp-control-bg) 88%,
-    rgba(255, 253, 245, 0.08) 8%
-  );
+  background: var(--ui-surface-raised);
   border: 1px solid transparent;
-  border-radius: 12px;
+  border-radius: var(--ui-radius-sm);
   margin-bottom: 6px;
 }
 .preset-item.active {
-  background: linear-gradient(
-    135deg,
-    color-mix(in srgb, var(--comp-accent) 22%, transparent),
-    color-mix(in srgb, var(--comp-accent) 12%, rgba(0, 0, 0, 0.06))
-  );
-  border-color: color-mix(in srgb, var(--comp-accent) 42%, transparent);
-  box-shadow: 0 10px 20px
-    color-mix(in srgb, var(--comp-accent) 16%, transparent);
+  background: color-mix(in srgb, var(--ui-action-primary) 10%, var(--ui-surface-raised));
+  border-color: color-mix(in srgb, var(--ui-action-primary) 45%, var(--ui-border));
 }
 .preset-checkbox {
   display: flex;
@@ -194,11 +186,11 @@ const {
 .preset-name {
   flex: 1;
   font-size: 14px;
-  color: var(--comp-text);
+  color: var(--ui-text-primary);
   cursor: pointer;
 }
 .preset-name:hover {
-  color: var(--comp-accent);
+  color: var(--ui-action-primary);
 }
 .preset-tags {
   display: flex;
@@ -217,9 +209,9 @@ const {
     rgba(255, 253, 245, 0.08) 8%
   );
   border: 1px solid color-mix(in srgb, var(--comp-border) 70%, transparent);
-  border-radius: 999px;
+  border-radius: var(--ui-radius-sm);
   font-size: 10px;
-  color: var(--comp-muted);
+  color: var(--ui-text-secondary);
   white-space: nowrap;
 }
 .more-tags {
@@ -232,30 +224,32 @@ const {
 }
 .update-btn,
 .delete-btn {
-  border: none;
+  min-height: 32px;
+  border: 1px solid var(--ui-border);
   cursor: pointer;
-  font-size: 14px;
-  padding: 4px 6px;
-  border-radius: 8px;
-  background: transparent;
+  font-size: 12px;
+  padding: 5px 8px;
+  border-radius: var(--ui-radius-sm);
+  background: var(--ui-surface-raised);
 }
 .update-btn {
-  color: color-mix(in srgb, var(--comp-accent) 82%, #d8dfab 18%);
+  color: var(--ui-action-primary);
 }
 .update-btn:hover {
-  background: color-mix(in srgb, var(--comp-accent) 12%, transparent);
+  background: var(--ui-action-secondary);
 }
 .delete-btn {
-  color: color-mix(in srgb, var(--comp-muted) 74%, #b68484 26%);
+  color: var(--ui-action-danger);
 }
 .delete-btn:hover {
-  background: color-mix(in srgb, #7e4d4d 18%, transparent);
-  color: #fff1f1;
+  background: color-mix(in srgb, var(--ui-action-danger) 10%, var(--ui-surface));
 }
 .preset-empty {
   text-align: center;
-  color: var(--comp-muted);
+  color: var(--ui-text-secondary);
   padding: 20px 0;
   font-size: 13px;
 }
 </style>
+
+

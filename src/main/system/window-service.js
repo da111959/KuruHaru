@@ -1,0 +1,824 @@
+import { app, BrowserWindow, Menu, nativeTheme, shell, Tray } from "electron";
+import path, { join } from "path";
+import fs from "fs";
+import icon from "../../../resources/icon.png?asset";
+import trayIcon from "../../../build/icon-tray.ico?asset";
+import { getConfig } from "../modules/config";
+import { createLogSender } from "../utils/logger";
+import { registerIpcHandler } from "../ipc/registry";
+
+const logger = createLogSender("app");
+let mainWindow = null;
+let tray = null;
+
+function getAliveMainWindow() {
+  if (!mainWindow || mainWindow.isDestroyed()) return null;
+  return mainWindow;
+}
+
+function handleTrayClick() {
+  const win = getAliveMainWindow();
+  if (!win) return;
+
+  if (win.isVisible()) {
+    win.hide();
+    return;
+  }
+  restoreAndRevealWindow(win);
+}
+
+function handleTrayDoubleClick() {
+  const win = getAliveMainWindow();
+  if (win) restoreAndRevealWindow(win);
+}
+
+const WINDOW_FRAME_MODE = {
+  CUSTOM: "custom",
+  SYSTEM: "system",
+};
+
+const DEFAULT_WINDOW_FRAME_MODE = WINDOW_FRAME_MODE.CUSTOM;
+const DEFAULT_THEME_MODE = "auto";
+const DEFAULT_BLUR_INTENSITY = 8;
+const MAX_BLUR_INTENSITY = 40;
+const DEFAULT_ACCENT_COLOR = "#adb571";
+const DEFAULT_BLUR_RENDER_MODE = "system";
+const DEV_RENDERER_URL =
+  process.env.ELECTRON_RENDERER_URL || "http://localhost:5173";
+function buildRendererLaunchTarget() {
+  const query = {};
+
+  if (process.env.NODE_ENV === "development") {
+    const url = new URL(DEV_RENDERER_URL);
+    Object.entries(query).forEach(([key, value]) => {
+      url.searchParams.set(key, value);
+    });
+    return {
+      mode: "url",
+      target: url.toString(),
+    };
+  }
+
+  return {
+    mode: "file",
+    target: join(__dirname, "../renderer/index.html"),
+    query,
+  };
+}
+
+function loadMainWindowRenderer(windowInstance) {
+  const launchTarget = buildRendererLaunchTarget();
+
+  if (launchTarget.mode === "url") {
+    windowInstance.loadURL(launchTarget.target);
+    return launchTarget.target;
+  }
+
+  windowInstance.loadFile(launchTarget.target, {
+    query: launchTarget.query,
+  });
+  return launchTarget.target;
+}
+
+function configureMainWindowNavigation(windowInstance) {
+  windowInstance.webContents.setWindowOpenHandler(({ url }) => {
+    try {
+      const targetUrl = new URL(url);
+      if (targetUrl.protocol === "http:" || targetUrl.protocol === "https:") {
+        shell.openExternal(targetUrl.toString()).catch((error) => {
+          logger.warn(`打开外部链接失败: ${error?.message || error}`);
+        });
+      } else {
+        logger.warn(`已阻止不安全的新窗口协议: ${targetUrl.protocol}`);
+      }
+    } catch {
+      logger.warn(`已阻止无效的新窗口地址: ${url}`);
+    }
+
+    return { action: "deny" };
+  });
+
+  windowInstance.webContents.on("will-navigate", (event, url) => {
+    event.preventDefault();
+    logger.warn(`已阻止主窗口导航: ${url}`);
+  });
+}
+
+let activeWindowFrameMode = resolveEffectiveWindowFrameMode(
+  DEFAULT_WINDOW_FRAME_MODE,
+);
+
+function normalizeWindowFrameMode(rawMode) {
+  if (rawMode === WINDOW_FRAME_MODE.SYSTEM) {
+    return WINDOW_FRAME_MODE.SYSTEM;
+  }
+  return WINDOW_FRAME_MODE.CUSTOM;
+}
+
+function normalizeThemeMode(rawMode) {
+  if (rawMode === "dark" || rawMode === "light" || rawMode === "auto") {
+    return rawMode;
+  }
+
+  return DEFAULT_THEME_MODE;
+}
+
+function normalizeBlurIntensity(rawValue) {
+  const parsed = Number(rawValue);
+  if (!Number.isFinite(parsed)) {
+    return DEFAULT_BLUR_INTENSITY;
+  }
+
+  return Math.min(MAX_BLUR_INTENSITY, Math.max(0, Math.round(parsed)));
+}
+
+function normalizeAccentColor(rawValue) {
+  if (typeof rawValue === "string" && /^#[0-9a-fA-F]{6}$/.test(rawValue)) {
+    return rawValue.toLowerCase();
+  }
+
+  return DEFAULT_ACCENT_COLOR;
+}
+
+function normalizeBlurRenderMode(rawValue) {
+  if (rawValue === "gpu" || rawValue === "system") {
+    return rawValue;
+  }
+
+  return DEFAULT_BLUR_RENDER_MODE;
+}
+
+function resolveThemeSource(themeMode) {
+  if (themeMode === "dark" || themeMode === "light") {
+    return themeMode;
+  }
+
+  return "system";
+}
+
+function resolveDarkModeFlag(themeMode) {
+  if (themeMode === "dark") {
+    return true;
+  }
+
+  if (themeMode === "light") {
+    return false;
+  }
+
+  return Boolean(nativeTheme.shouldUseDarkColors);
+}
+
+function resolveWindowAppearanceConfig() {
+  const config = getConfig();
+  const systemConfig = config?.system || {};
+
+  const themeMode = normalizeThemeMode(systemConfig.theme);
+  const parsedOpacity = Number(systemConfig.windowOpacity);
+  const windowOpacity = Number.isFinite(parsedOpacity)
+    ? Math.min(1, Math.max(0.55, Number(parsedOpacity.toFixed(2))))
+    : 1;
+  const blurEnabled = false;
+  const blurIntensity = normalizeBlurIntensity(systemConfig.blurIntensity);
+  const blurRenderMode = normalizeBlurRenderMode(systemConfig.blurRenderMode);
+  const accentColor = normalizeAccentColor(systemConfig.accentColor);
+
+  return {
+    themeMode,
+    windowOpacity,
+    blurEnabled,
+    blurIntensity,
+    blurRenderMode,
+    accentColor,
+    proxyUrl:
+      typeof systemConfig.proxyUrl === "string"
+        ? systemConfig.proxyUrl.trim()
+        : "",
+  };
+}
+
+function resolveRequestedWindowFrameMode() {
+  try {
+    const config = getConfig();
+    return normalizeWindowFrameMode(config?.system?.windowFrameMode);
+  } catch {
+    return DEFAULT_WINDOW_FRAME_MODE;
+  }
+}
+
+function resolveEffectiveWindowFrameMode(requestedMode) {
+  if (requestedMode === WINDOW_FRAME_MODE.SYSTEM) {
+    return WINDOW_FRAME_MODE.SYSTEM;
+  }
+
+  // 目前仅在 Windows 启用完整无边框方案，其它平台兜底系统边框。
+  if (process.platform === "win32") {
+    return WINDOW_FRAME_MODE.CUSTOM;
+  }
+
+  return WINDOW_FRAME_MODE.SYSTEM;
+}
+
+function getWindowChromeOptions(frameMode) {
+  if (frameMode === WINDOW_FRAME_MODE.CUSTOM && process.platform === "win32") {
+    return {
+      frame: false,
+      transparent: false,
+      backgroundColor: "#f6f4ee",
+      hasShadow: true,
+      // 保留系统缩放边界，否则无边框窗口无法拖拽调整大小
+      thickFrame: true,
+      resizable: true,
+      roundedCorners: true,
+    };
+  }
+
+  return {
+    frame: true,
+    transparent: false,
+    backgroundColor: "#f7f8fa",
+  };
+}
+
+function buildWindowStatePayload(windowInstance) {
+  const requestedFrameMode = resolveRequestedWindowFrameMode();
+  const requestedEffectiveFrameMode =
+    resolveEffectiveWindowFrameMode(requestedFrameMode);
+  const frameMode = activeWindowFrameMode || requestedEffectiveFrameMode;
+  const appearance = resolveWindowAppearanceConfig();
+  const isWindowValid =
+    windowInstance &&
+    !windowInstance.isDestroyed() &&
+    !windowInstance.webContents.isDestroyed();
+
+  return {
+    frameMode,
+    requestedFrameMode,
+    frameModeNeedsRestart: frameMode !== requestedEffectiveFrameMode,
+    customFrameEnabled: frameMode === WINDOW_FRAME_MODE.CUSTOM,
+    windowControlSupported:
+      process.platform === "win32" && frameMode === WINDOW_FRAME_MODE.CUSTOM,
+    maximized: Boolean(isWindowValid && windowInstance.isMaximized()),
+    focused: Boolean(isWindowValid && windowInstance.isFocused()),
+    darkMode: resolveDarkModeFlag(appearance.themeMode),
+    themeMode: appearance.themeMode,
+    windowOpacity: appearance.windowOpacity,
+    blurEnabled: appearance.blurEnabled,
+    blurIntensity: appearance.blurIntensity,
+    blurRenderMode: appearance.blurRenderMode,
+    accentColor: appearance.accentColor,
+  };
+}
+
+function emitWindowState(windowInstance) {
+  if (
+    !windowInstance ||
+    windowInstance.isDestroyed() ||
+    !windowInstance.webContents ||
+    windowInstance.webContents.isDestroyed()
+  ) {
+    return;
+  }
+
+  windowInstance.webContents.send(
+    "window-state-changed",
+    buildWindowStatePayload(windowInstance),
+  );
+}
+
+function resolveWindowsBackgroundMaterial(appearance) {
+  if (!appearance?.blurEnabled) {
+    return "none";
+  }
+
+  if (appearance.blurRenderMode === "gpu") {
+    return "acrylic";
+  }
+
+  // system ????? Win11 Mica ???
+  return "mica";
+}
+
+function applyWindowsDesktopMaterial(windowInstance) {
+  if (!windowInstance || windowInstance.isDestroyed()) {
+    return;
+  }
+
+  const appearance = resolveWindowAppearanceConfig();
+  const useDarkSurface = resolveDarkModeFlag(appearance.themeMode);
+  const requestedMaterial = resolveWindowsBackgroundMaterial(appearance);
+  const canUseCustomMaterial =
+    process.platform === "win32" &&
+    activeWindowFrameMode === WINDOW_FRAME_MODE.CUSTOM &&
+    requestedMaterial !== "none";
+
+  if (typeof windowInstance.setOpacity === "function") {
+    // ?????????????????????????????
+    windowInstance.setOpacity(appearance.windowOpacity);
+  }
+
+  if (process.platform !== "win32") {
+    return;
+  }
+
+  try {
+    windowInstance.setBackgroundColor(useDarkSurface ? "#10151d" : "#f7f7f9");
+
+    if (typeof windowInstance.setBackgroundMaterial === "function") {
+      windowInstance.setBackgroundMaterial(
+        canUseCustomMaterial ? requestedMaterial : "none",
+      );
+      logger.debug(
+        canUseCustomMaterial
+          ? `? Windows ???????: ${requestedMaterial}`
+          : "? Windows ???????",
+      );
+      return;
+    }
+
+    if (typeof windowInstance.setVibrancy === "function") {
+      windowInstance.setVibrancy(null);
+      logger.debug("?? ?? Electron ????? setBackgroundMaterial????????");
+      return;
+    }
+
+    logger.debug("?? ?? Electron API ?????????");
+  } catch (error) {
+    logger.warn(`?? ?? Windows ??????: ${error.message}`);
+  }
+}
+
+function applyThemePreference() {
+  const appearance = resolveWindowAppearanceConfig();
+  const nextThemeSource = resolveThemeSource(appearance.themeMode);
+
+  if (nativeTheme.themeSource !== nextThemeSource) {
+    nativeTheme.themeSource = nextThemeSource;
+    logger.debug(`✅ 主题模式已切换: ${appearance.themeMode}`);
+  }
+}
+
+function ensureMainWindowContent(windowInstance) {
+  if (!windowInstance || windowInstance.isDestroyed()) {
+    return;
+  }
+
+  const currentUrl = windowInstance.webContents.getURL();
+
+  if (currentUrl && currentUrl !== "about:blank") {
+    return;
+  }
+
+  logger.warn("⚠️ 检测到窗口内容为空，尝试重新加载渲染页面");
+
+  loadMainWindowRenderer(windowInstance);
+}
+
+function restoreAndRevealWindow(windowInstance) {
+  if (!windowInstance || windowInstance.isDestroyed()) {
+    return;
+  }
+
+  if (windowInstance.isMinimized()) {
+    windowInstance.restore();
+  }
+
+  ensureMainWindowContent(windowInstance);
+
+  const webContents = windowInstance.webContents;
+
+  if (webContents?.isCrashed?.()) {
+    logger.warn("⚠️ 渲染进程疑似崩溃，恢复时触发重载");
+    webContents.reload();
+  }
+
+  applyWindowsDesktopMaterial(windowInstance);
+  windowInstance.show();
+  windowInstance.focus();
+  webContents.invalidate();
+}
+
+function resolveWindowCapturePath(rawPath) {
+  const explicitPath =
+    typeof rawPath === "string" && rawPath.trim() ? rawPath.trim() : "";
+  const fallbackName = `kuruharu-window-capture-${Date.now()}.png`;
+  const fallbackPath = path.join(app.getPath("temp"), fallbackName);
+  const outputPath = explicitPath ? path.resolve(explicitPath) : fallbackPath;
+  const parentDirectory = path.dirname(outputPath);
+
+  if (!fs.existsSync(parentDirectory)) {
+    fs.mkdirSync(parentDirectory, { recursive: true });
+  }
+
+  return outputPath;
+}
+
+async function captureWindowToFile(windowInstance, rawPath) {
+  if (
+    !windowInstance ||
+    !windowInstance.webContents ||
+    windowInstance.webContents.isDestroyed()
+  ) {
+    return {
+      success: false,
+      error: "window-not-ready",
+    };
+  }
+
+  try {
+    const image = await windowInstance.webContents.capturePage();
+    const outputPath = resolveWindowCapturePath(rawPath);
+    fs.writeFileSync(outputPath, image.toPNG());
+    const size = image.getSize();
+
+    return {
+      success: true,
+      path: outputPath,
+      width: size.width,
+      height: size.height,
+    };
+  } catch (error) {
+    logger.error(`??????: ${error?.stack || error?.message || error}`);
+    return {
+      success: false,
+      error: error?.message || "capture-failed",
+    };
+  }
+}
+function registerWindowCaptureIPC() {
+  registerIpcHandler("window-capture", async (_event, payload = {}) => {
+    const win = getAliveMainWindow();
+    return captureWindowToFile(win, payload?.path);
+  });
+}
+
+function registerWindowControlIPC() {
+  const handle = (channel, callback) =>
+    registerIpcHandler(channel, callback);
+
+  handle("window-set-opacity", (_event, rawOpacity) => {
+    const win = getAliveMainWindow();
+    if (!win || typeof win.setOpacity !== "function") {
+      return false;
+    }
+
+    const parsedOpacity = Number(rawOpacity);
+    if (!Number.isFinite(parsedOpacity)) {
+      return false;
+    }
+
+    const opacity = Math.min(1, Math.max(0.55, Number(parsedOpacity.toFixed(2))));
+    win.setOpacity(opacity);
+    emitWindowState(win);
+    return opacity;
+  });
+
+  handle("window-minimize", () => {
+    const win = getAliveMainWindow();
+    if (!win) return false;
+
+    const config = getConfig();
+
+    if (config.system?.minimizeToTray) {
+      win.hide();
+      return true;
+    }
+
+    win.minimize();
+    return true;
+  });
+
+  handle("window-toggle-maximize", () => {
+    const win = getAliveMainWindow();
+    if (!win) return false;
+
+    if (win.isMaximized()) {
+      win.unmaximize();
+    } else {
+      win.maximize();
+    }
+
+    return win.isMaximized();
+  });
+
+  handle("window-close", () => {
+    const win = getAliveMainWindow();
+    if (!win) return false;
+
+    win.close();
+    return true;
+  });
+
+  handle("window-is-maximized", () => {
+    const win = getAliveMainWindow();
+    if (!win) return false;
+
+    return win.isMaximized();
+  });
+
+  handle("window-get-state", () => {
+    const win = getAliveMainWindow();
+    return buildWindowStatePayload(win);
+  });
+
+  handle("window-get-bounds", () => {
+    const win = getAliveMainWindow();
+    if (!win) return null;
+    return win.getBounds();
+  });
+
+  handle("window-set-bounds", (_event, rawBounds) => {
+    const win = getAliveMainWindow();
+    if (!win || !rawBounds || typeof rawBounds !== "object") return false;
+
+    const bounds = {
+      x: Number.parseInt(rawBounds.x, 10),
+      y: Number.parseInt(rawBounds.y, 10),
+      width: Number.parseInt(rawBounds.width, 10),
+      height: Number.parseInt(rawBounds.height, 10),
+    };
+
+    if (
+      !Number.isFinite(bounds.x) ||
+      !Number.isFinite(bounds.y) ||
+      !Number.isFinite(bounds.width) ||
+      !Number.isFinite(bounds.height) ||
+      bounds.width < 400 ||
+      bounds.height < 300
+    ) {
+      return false;
+    }
+
+    win.setBounds(bounds, false);
+    return true;
+  });
+}
+
+// 应用系统设置
+function applySystemSettings() {
+  try {
+    const config = getConfig();
+    applyThemePreference();
+
+    // 应用开机自启动设置
+    if (config.system?.autoStart) {
+      const settings = {
+        openAtLogin: true,
+        path: process.execPath,
+        args: [],
+        name: app.getName(),
+      };
+      app.setLoginItemSettings(settings);
+      logger.debug("✅ 开机自启动已启用", settings);
+    } else {
+      app.setLoginItemSettings({ openAtLogin: false });
+      logger.debug("❌ 开机自启动已禁用");
+    }
+
+    // 如果启用最小化到托盘，创建托盘图标
+    if (config.system?.minimizeToTray) {
+      createTray();
+      logger.debug("✅ 最小化到托盘已启用");
+    } else {
+      destroyTray();
+      logger.debug("❌ 最小化到托盘已禁用");
+    }
+  } catch (error) {
+    logger.error("❌ 应用系统设置失败:", error.message);
+    console.error("应用系统设置失败:", error);
+  }
+}
+
+// 创建托盘图标
+function createTray() {
+  if (tray) {
+    logger.debug("托盘图标已存在，跳过创建");
+    return;
+  }
+
+  try {
+    logger.debug("开始创建托盘图标...");
+    // Windows平台使用专门的托盘图标
+    const trayIconToUse = process.platform === "win32" ? trayIcon : icon;
+    tray = new Tray(trayIconToUse);
+
+    const contextMenu = Menu.buildFromTemplate([
+      {
+        label: "显示窗口",
+        click: () => {
+          logger.debug("托盘菜单: 显示窗口");
+          const win = getAliveMainWindow();
+          if (win) restoreAndRevealWindow(win);
+        },
+      },
+      {
+        label: "退出",
+        click: () => {
+          logger.debug("托盘菜单: 退出应用");
+          app.quit();
+        },
+      },
+    ]);
+
+    tray.setToolTip("KuruHaru");
+    tray.setContextMenu(contextMenu);
+
+    tray.on("click", () => {
+      logger.debug("托盘图标被点击");
+      handleTrayClick();
+    });
+
+    // 双击托盘图标切换窗口显示状态
+    tray.on("double-click", () => {
+      logger.debug("托盘图标被双击");
+      handleTrayDoubleClick();
+    });
+
+    logger.debug("✅ 托盘图标已创建");
+  } catch (error) {
+    logger.error("❌ 创建托盘图标失败:", error.message);
+    console.error("创建托盘图标失败:", error);
+  }
+}
+
+// 销毁托盘图标
+function destroyTray() {
+  if (tray) {
+    tray.destroy();
+    tray = null;
+    logger.debug("托盘图标已销毁");
+  }
+}
+
+function createWindow() {
+  logger.debug("开始创建窗口...");
+  const requestedFrameMode = resolveRequestedWindowFrameMode();
+  const effectiveFrameMode =
+    resolveEffectiveWindowFrameMode(requestedFrameMode);
+  activeWindowFrameMode = effectiveFrameMode;
+  logger.debug(
+    `窗口边框模式 requested=${requestedFrameMode} effective=${effectiveFrameMode}`,
+  );
+
+  mainWindow = new BrowserWindow({
+    width: 1200,
+    height: 800,
+    show: false,
+    paintWhenInitiallyHidden: true,
+    autoHideMenuBar: true,
+    skipTaskbar: false,
+    icon: icon,
+    ...getWindowChromeOptions(effectiveFrameMode),
+    webPreferences: {
+      preload: join(__dirname, "../preload/index.js"),
+      sandbox: false,
+      nodeIntegration: false,
+      contextIsolation: true,
+      // 长时间后台运行的下载/翻译由主进程负责，渲染器允许节流以避免 GPU 合成堆积。
+      backgroundThrottling: true,
+    },
+  });
+  const createdWindow = mainWindow;
+
+  createdWindow.on("closed", () => {
+    if (mainWindow === createdWindow) mainWindow = null;
+  });
+
+  configureMainWindowNavigation(mainWindow);
+  applyWindowsDesktopMaterial(mainWindow);
+
+  logger.debug("窗口对象已创建");
+
+  const rendererTarget = loadMainWindowRenderer(mainWindow);
+  if (process.env.NODE_ENV === "development") {
+    mainWindow.webContents.openDevTools({ mode: "detach" }); // 使用独立窗口模式
+    logger.debug("开发模式：强制打开 DevTools");
+    logger.debug(`加载开发服务器: ${rendererTarget}`);
+  } else {
+    logger.debug(`加载生产构建页面: ${rendererTarget}`);
+  }
+
+  mainWindow.on("ready-to-show", () => {
+    if (mainWindow?.isDestroyed()) return;
+    logger.debug("ready-to-show 事件触发，显示窗口");
+    applyWindowsDesktopMaterial(mainWindow);
+    mainWindow.show();
+    emitWindowState(mainWindow);
+  });
+
+  mainWindow.on("show", () => {
+    logger.debug("窗口已显示");
+    const win = getAliveMainWindow();
+    if (!win) return;
+    ensureMainWindowContent(win);
+    emitWindowState(win);
+  });
+
+  mainWindow.on("restore", () => {
+    logger.debug("窗口已还原");
+    const win = getAliveMainWindow();
+    if (!win) return;
+    ensureMainWindowContent(win);
+    emitWindowState(win);
+  });
+
+  mainWindow.on("focus", () => {
+    emitWindowState(mainWindow);
+  });
+
+  mainWindow.on("blur", () => {
+    emitWindowState(mainWindow);
+  });
+
+  mainWindow.on("maximize", () => {
+    emitWindowState(mainWindow);
+  });
+
+  mainWindow.on("unmaximize", () => {
+    emitWindowState(mainWindow);
+  });
+
+  mainWindow.on("enter-full-screen", () => {
+    emitWindowState(mainWindow);
+  });
+
+  mainWindow.on("leave-full-screen", () => {
+    emitWindowState(mainWindow);
+  });
+
+  // 处理窗口最小化事件
+  mainWindow.on("minimize", (event) => {
+    if (mainWindow?.isDestroyed()) return;
+    const config = getConfig();
+
+    if (config.system?.minimizeToTray) {
+      event.preventDefault();
+
+      mainWindow.hide();
+
+      logger.debug("窗口已最小化到托盘");
+    }
+  });
+
+  mainWindow.webContents.on("did-finish-load", () => {
+    if (mainWindow?.isDestroyed()) return;
+    logger.debug("页面加载完成");
+    emitWindowState(mainWindow);
+  });
+
+  mainWindow.webContents.on("render-process-gone", (_event, details) => {
+    logger.error(
+      `渲染进程退出: reason=${details?.reason || "unknown"}, code=${details?.exitCode ?? "unknown"}`,
+    );
+
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      return;
+    }
+
+    setTimeout(() => {
+      if (!mainWindow || mainWindow.isDestroyed()) {
+        return;
+      }
+
+      ensureMainWindowContent(mainWindow);
+      mainWindow.webContents.reload();
+    }, 180);
+  });
+
+  mainWindow.on("unresponsive", () => {
+    logger.warn("窗口出现无响应，尝试触发重绘");
+
+    if (!getAliveMainWindow()) return;
+
+    mainWindow.webContents.invalidate();
+  });
+
+  mainWindow.webContents.on(
+    "did-fail-load",
+    (event, errorCode, errorDescription, validatedURL) => {
+      logger.error("页面加载失败:", errorCode, errorDescription, validatedURL);
+    },
+  );
+
+  return mainWindow;
+}
+
+
+export function createWindowService() {
+  registerWindowControlIPC();
+  registerWindowCaptureIPC();
+  nativeTheme.on("updated", () => {
+    const win = getAliveMainWindow();
+    emitWindowState(win);
+  });
+  app.on("config-updated", () => {
+    const win = getAliveMainWindow();
+    applySystemSettings();
+    applyWindowsDesktopMaterial(win);
+    emitWindowState(win);
+  });
+  return {
+    createWindow,
+    applySystemSettings,
+    getMainWindow: getAliveMainWindow,
+  };
+}

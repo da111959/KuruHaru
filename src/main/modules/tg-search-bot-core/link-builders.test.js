@@ -16,11 +16,7 @@ describe("tg-search-bot-core/link-builders", () => {
     );
 
     expect(result.primaryUrl).toBe("https://t.me/my_channel/9527");
-    expect(result.alternateUrls).toEqual([
-      "tg://resolve?domain=my_channel&post=9527",
-      "https://t.me/c/1001234567890/9527",
-      "tg://privatepost?channel=1001234567890&post=9527",
-    ]);
+    expect(result).not.toHaveProperty("alternateUrls");
   });
 
   it("entity.id 为 -100 形态时，c 链接应保留 100 前缀", () => {
@@ -39,9 +35,7 @@ describe("tg-search-bot-core/link-builders", () => {
     const result = buildMessageLinksByEntity(null, "@abcde_bot", 66);
 
     expect(result.primaryUrl).toBe("https://t.me/abcde_bot/66");
-    expect(result.alternateUrls).toEqual([
-      "tg://resolve?domain=abcde_bot&post=66",
-    ]);
+    expect(result).not.toHaveProperty("alternateUrls");
   });
 
   it("fallbackChannelId 为用户名时，优先使用该频道名生成主链接", () => {

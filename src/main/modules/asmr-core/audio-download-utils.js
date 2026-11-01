@@ -1,10 +1,13 @@
 import path from "path";
+import { CONFIG_DEFAULTS } from "../../../shared/config-contract.mjs";
 
 const EXACT_WORK_CODE_REGEX = /^(RJ|VJ|BJ)(\d{6,8})$/i;
 const EMBEDDED_WORK_CODE_REGEX = /(RJ|VJ|BJ)(\d{6,8})/i;
 const NUMERIC_WORK_CODE_REGEX = /^(\d{6,8})$/;
-export const DEFAULT_MAX_AUTO_DOWNLOAD_TASKS_PER_WORK = 20;
-export const DEFAULT_FILTER_VIDEO_FORMATS = true;
+export const DEFAULT_MAX_AUTO_DOWNLOAD_TASKS_PER_WORK =
+  CONFIG_DEFAULTS.asmr.downloadMaxAutoTasksPerWork;
+export const DEFAULT_FILTER_VIDEO_FORMATS =
+  CONFIG_DEFAULTS.asmr.downloadFilterVideoFormats;
 
 // 真正的非剧情垃圾/外语翻译包/样本试听（这些始终不予下载）
 const HARD_EXCLUDE_KEYWORDS =

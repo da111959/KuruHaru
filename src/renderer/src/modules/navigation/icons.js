@@ -6,8 +6,8 @@ import {
   Chat24Regular,
   Circle24Regular,
   Cloud24Regular,
-  Flash24Regular,
   Folder24Regular,
+  Flash24Regular,
   Headphones24Regular,
   Home24Regular,
   Library24Regular,
@@ -21,11 +21,6 @@ import {
 
 const NAV_ICON_REGISTRY = Object.freeze({
   home: Home24Regular,
-  workflow: Flash24Regular,
-  "workflow-templates": Library24Regular,
-  "workflow-designer": PuzzlePiece24Regular,
-  "workflow-runtime": Flash24Regular,
-  "workflow-docs": TextBulletListSquare24Regular,
   tasks: ArrowUpload24Regular,
   upload: ArrowUpload24Regular,
   whisper: Headphones24Regular,

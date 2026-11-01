@@ -1,7 +1,7 @@
 import fs from "fs";
 import path from "path";
 import { execFile, spawn } from "child_process";
-import { app, ipcMain, webContents } from "electron";
+import { app, webContents } from "electron";
 import archiver from "archiver";
 import { getAsmrClient } from "./httpClient.js";
 import { getConfig, getDataDir, saveConfig } from "./config.js";
@@ -12,6 +12,14 @@ import { extractWorksArrayExtended } from "./asmr-core/search-utils.js";
 import { collectPackFilesInDirectory } from "./whisper-pack-utils.js";
 import { requireConnectedTelegramClient } from "../utils/telegram-login.js";
 import { normalizePeerEntityInput } from "./tg-common-core/peer-entity.js";
+import { CONFIG_DEFAULTS } from "../../shared/config-contract.mjs";
+import { getAsmrToken } from "../domains/asmr/credential-store.js";
+import {
+  classifyTranslationFailure,
+  createTranslationWorkState,
+  recoverTranslationWorkStates,
+  transitionTranslationWork,
+} from "./translation-automation-state.js";
 
 const logger = createLogSender("translation-automation");
 const AUTOMATION_STATE_FILE = "translation-automation-state.json";
@@ -33,36 +41,14 @@ const MEDIA_EXTENSIONS = new Set([
   ".wmv",
 ]);
 const SUBTITLE_EXTENSIONS = new Set([".lrc", ".srt", ".vtt", ".ass", ".ssa"]);
-const DEFAULTS = {
-  enabled: false,
-  runOnStartup: true,
-  scanIntervalMs: 30 * 60 * 1000,
-  recentOrder: "create_date",
-  recentPageSize: 100,
-  recentMaxPages: 3,
-  maxWorksPerCycle: 3,
-  maxDownloadTasksPerWork: 200,
-  aria2RestartMaxAttempts: 3,
-  aria2RestartCooldownMs: 5 * 60 * 1000,
-  aria2EarlyRetryPercent: 80,
-  includeTags: [],
-  excludeTags: [],
-  requireAllIncludeTags: false,
-  startHour: 1,
-  endHour: 7,
-  downloadWaitTimeoutMs: 6 * 60 * 60 * 1000,
-  downloadPollIntervalMs: 30 * 1000,
-  downloadStablePolls: 2,
-  whisperStallTimeoutMs: 10 * 60 * 1000,
-  whisperActivityPollMs: 15 * 1000,
-  cleanupLocalAfterUpload: true,
-  packageDirName: "_translated_packages",
-};
+const DEFAULTS = CONFIG_DEFAULTS.translationAutomation;
 const WHISPER_DIAGNOSTIC_LOG_DIRNAME = "whisper-runs";
 const WHISPER_DIAGNOSTIC_LOG_LIMIT = 100;
 const WHISPER_STDERR_TAIL_LIMIT = 64 * 1024;
+const WHISPER_VAD_SHUTDOWN_GRACE_MS = 15 * 1000;
 
 let timer = null;
+let startupTimer = null;
 let running = false;
 let lastRun = null;
 let currentRunPromise = null;
@@ -168,28 +154,6 @@ const getRuntimeConfig = () => {
   };
 };
 
-const migrateLegacyScanInterval = async () => {
-  const configuredInterval = Number(
-    getConfig()?.translationAutomation?.scanIntervalMs,
-  );
-  const legacyInterval = 60 * 60 * 1000;
-  if (configuredInterval !== legacyInterval) return false;
-
-  const saved = await saveConfig({
-    translationAutomation: {
-      ...getRuntimeConfig(),
-      scanIntervalMs: DEFAULTS.scanIntervalMs,
-    },
-  });
-  if (!saved) {
-    logger.warn("[automation] 扫描周期迁移失败，仍使用已保存的一小时配置");
-    return false;
-  }
-
-  logger.info("[automation] 已将旧的一小时扫描周期迁移为三十分钟");
-  return true;
-};
-
 const getAria2RestartMaxAttempts = (config) => {
   const configuredAttempts = Number(config?.aria2RestartMaxAttempts);
   if (!Number.isFinite(configuredAttempts)) {
@@ -217,7 +181,8 @@ const getAria2EarlyRetryPercent = (config) => {
 const getQueueRuntimeConfig = () => {
   const asmrConfig = getConfig()?.asmr || {};
   return {
-    token: String(asmrConfig.token || "").trim(),
+    // Login tokens are kept in the encrypted credential store, not renderer config.
+    token: String(getAsmrToken() || asmrConfig.token || "").trim(),
     playlistId: String(
       asmrConfig.translationQueuePlaylistId ||
         asmrConfig.pendingTranslationQueuePlaylistId ||
@@ -234,20 +199,54 @@ const getStatePath = () => {
 
 const readState = async () => {
   try {
-    return JSON.parse(await fs.promises.readFile(getStatePath(), "utf8"));
+    const parsed = JSON.parse(await fs.promises.readFile(getStatePath(), "utf8"));
+    const workStates = recoverTranslationWorkStates(parsed?.workStates || {});
+    // Keep compatibility with v1 files while making workStates authoritative.
+    Object.entries(parsed?.failedCodes || {}).forEach(([code, message]) => {
+      if (workStates[code]) return;
+      const initial = createTranslationWorkState({ code, stage: "discovered" });
+      workStates[code] = transitionTranslationWork(initial, "failed", {
+        retryable: true,
+        failure: { code: "legacy_failed", message: String(message || "") },
+        reason: "legacy failedCodes migration",
+      });
+    });
+    return {
+      completedCodes: Array.isArray(parsed?.completedCodes) ? parsed.completedCodes : [],
+      failedCodes: projectFailedCodes(workStates),
+      workStates,
+      updatedAt: parsed?.updatedAt || "",
+    };
   } catch {
-    return { completedCodes: [], failedCodes: {}, updatedAt: "" };
+    return { completedCodes: [], failedCodes: {}, workStates: {}, updatedAt: "" };
   }
 };
 
+const projectFailedCodes = (workStates = {}) =>
+  Object.fromEntries(
+    Object.entries(workStates)
+      .filter(([, work]) => ["failed", "retryable", "manual-review"].includes(work?.stage))
+      .map(([code, work]) => [
+        code,
+        String(work?.failure?.message || work?.events?.at(-1)?.reason || "任务失败"),
+      ]),
+  );
+
 const writeState = async (state) => {
+  state.failedCodes = projectFailedCodes(state.workStates);
   await fs.promises.mkdir(path.dirname(getStatePath()), { recursive: true });
+  const statePath = getStatePath();
+  const tempPath = `${statePath}.${process.pid}.${Date.now()}.tmp`;
   await fs.promises.writeFile(
-    getStatePath(),
+    tempPath,
     JSON.stringify(
       {
+        version: 2,
         completedCodes: [...new Set(state.completedCodes || [])].slice(-5000),
         failedCodes: state.failedCodes || {},
+        workStates: Object.fromEntries(
+          Object.entries(state.workStates || {}).slice(-5000),
+        ),
         updatedAt: new Date().toISOString(),
       },
       null,
@@ -255,6 +254,46 @@ const writeState = async (state) => {
     ),
     "utf8",
   );
+  await fs.promises.rename(tempPath, statePath);
+};
+
+const updateWorkState = (state, code, stage, options = {}) => {
+  if (!code) return null;
+  const current =
+    state.workStates[code] ||
+    createTranslationWorkState({
+      code,
+      work: options.work,
+      stage: "discovered",
+    });
+  state.workStates[code] = transitionTranslationWork(current, stage, options);
+  return state.workStates[code];
+};
+
+const recordTranslationFailure = (state, code, error, stage = "unknown", options = {}) => {
+  const classified = options.classification
+    ? {
+        classification: options.classification,
+        failure: {
+          code: options.failureCode || `${stage}_failed`,
+          message: String(error || "未知错误"),
+          stage,
+        },
+      }
+    : classifyTranslationFailure(error, stage);
+  updateWorkState(state, code, "failed", {
+    failure: classified.failure,
+    retryable: classified.classification === "retryable",
+    manualReview: classified.classification === "manual-review",
+    recoveryAction:
+      classified.classification === "manual-review"
+        ? "manual-review"
+        : options.recoveryAction || "resume-stage",
+    reason: options.reason || classified.failure.message,
+    work: options.work,
+  });
+  state.failedCodes = projectFailedCodes(state.workStates);
+  return state.failedCodes[code];
 };
 
 const emit = (message, { persistLog = true, ...payload } = {}) => {
@@ -593,7 +632,7 @@ const collectHistoricalTranslatedCodes = async () => {
 
 const fetchRecentWorks = async (config) => {
   const appConfig = getConfig();
-  const token = String(appConfig?.asmr?.token || "").trim();
+  const token = String(getAsmrToken() || appConfig?.asmr?.token || "").trim();
   const headers = token ? { Authorization: `Bearer ${token}` } : {};
   const client = getAsmrClient();
   const works = [];
@@ -1718,6 +1757,8 @@ const translateSubtitles = async ({
     let settled = false;
     let lastActivityAt = Date.now();
     let previousFingerprint = "";
+    let completePolls = 0;
+    let vadShutdownTimer = null;
     let pendingOutputLines = [];
     let outputFlushTimer = null;
     void diagnosticLog.write("spawned", { childProcessId: child.pid || null });
@@ -1753,10 +1794,48 @@ const translateSubtitles = async ({
       }
       child.kill("SIGKILL");
     };
+    const scheduleVadShutdown = () => {
+      if (vadShutdownTimer || settled) return;
+      emit(
+        `[Whisper] 检测到 VAD 注入已停用，等待 ${WHISPER_VAD_SHUTDOWN_GRACE_MS / 1000} 秒确认引擎退出`,
+        { persistLog: false },
+      );
+      vadShutdownTimer = setTimeout(async () => {
+        vadShutdownTimer = null;
+        if (settled) return;
+        try {
+          const activity = await getDirectoryActivity(targetPath);
+          stopChildProcess("vad-shutdown-timeout");
+          if (
+            activity.mediaFileCount > 0 &&
+            activity.lrcFileCount === activity.mediaFileCount
+          ) {
+            emit(
+              `[Whisper] VAD 已停用且字幕完整 (${activity.lrcFileCount}/${activity.mediaFileCount})，结束引擎进程`,
+              { persistLog: false },
+            );
+            settle(resolve);
+          } else {
+            settle(
+              reject,
+              new Error(
+                `VAD 注入已停用，但 Whisper 引擎 ${WHISPER_VAD_SHUTDOWN_GRACE_MS / 1000} 秒内未退出，字幕 ${activity.lrcFileCount}/${activity.mediaFileCount}`,
+              ),
+            );
+          }
+        } catch (error) {
+          settle(reject, error);
+        }
+      }, WHISPER_VAD_SHUTDOWN_GRACE_MS);
+    };
     const settle = (handler, value) => {
       if (settled) return;
       settled = true;
       clearInterval(activityTimer);
+      if (vadShutdownTimer) {
+        clearTimeout(vadShutdownTimer);
+        vadShutdownTimer = null;
+      }
       if (outputFlushTimer) {
         clearTimeout(outputFlushTimer);
       }
@@ -1776,6 +1855,9 @@ const translateSubtitles = async ({
       }
 
       pendingOutputLines.push(...lines);
+      if (lines.some((line) => /VAD\s*(?:注入已)?停用|VAD.*(?:deactivated|disabled)/i.test(line))) {
+        scheduleVadShutdown();
+      }
       if (!outputFlushTimer) {
         outputFlushTimer = setTimeout(flushOutput, 750);
       }
@@ -1800,12 +1882,33 @@ const translateSubtitles = async ({
       }
     });
     const activityTimer = setInterval(async () => {
+      if (settled) return;
       try {
         const activity = await getDirectoryActivity(targetPath);
         const fingerprint = `${activity.fileCount}:${activity.totalBytes}:${activity.latestMtimeMs}`;
         if (fingerprint !== previousFingerprint) {
           previousFingerprint = fingerprint;
           lastActivityAt = Date.now();
+        }
+        // VAD teardown can leave infer.exe alive after every subtitle has
+        // been written. Do not wait for the long stall timeout in that case;
+        // require two stable polls so the final file has time to flush.
+        const outputsComplete =
+          activity.mediaFileCount > 0 &&
+          activity.lrcFileCount === activity.mediaFileCount &&
+          activity.aria2TempFileCount === 0;
+        completePolls = outputsComplete ? completePolls + 1 : 0;
+        if (completePolls >= 2) {
+          stopChildProcess("outputs-complete");
+          void diagnosticLog.write("outputs-complete", {
+            activity,
+            completePolls,
+          });
+          emit(
+            `Whisper 已生成完整字幕 (${activity.lrcFileCount}/${activity.mediaFileCount})，正在结束引擎进程`,
+          );
+          settle(resolve);
+          return;
         }
         const idleMs = Date.now() - lastActivityAt;
         setRuntimeProgress(
@@ -1971,25 +2074,48 @@ const packageUploadAndCleanupWork = async ({
   config,
   workDir,
   downloadDir,
+  state,
+  persistState,
 }) => {
   const packageDir = path.join(downloadDir, config.packageDirName);
+  const recordStage = async (stage, options = {}) => {
+    if (!state || typeof persistState !== "function") return;
+    updateWorkState(state, code, stage, { work, ...options });
+    await persistState();
+  };
+  await recordStage("transcribing", { reason: "audio completeness verified" });
+  const whisperDiagnosticLog = await createWhisperDiagnosticLog({
+    code,
+    exePath: getConfig()?.whisper?.exePath || "",
+    args: [],
+    targetPath: workDir,
+  }).catch(() => null);
   setRuntimeStatus("package", `正在打包 ${code} 字幕`, code);
+  await recordStage("packaged", { reason: "subtitle package is being prepared" });
   const packagePath = await packSubtitles({
     targetPath: workDir,
     outputDir: packageDir,
     code,
   });
+  await recordStage("packaged", {
+    externalRefs: { packagePath, whisperDiagnosticLog },
+    reason: "subtitle package created",
+  });
   setRuntimeStatus("upload", `正在上传 ${code} 字幕包`, code);
+  await recordStage("uploading", { externalRefs: { packagePath } });
   await uploadSubtitlePackage({
     filePath: packagePath,
     code,
     channelId: getConfig()?.upload?.channelId || "",
   });
+  await recordStage("uploading", { reason: "Telegram acknowledged send" });
   setRuntimeStatus("cleanup", `正在从待翻译队列删除 ${code}`, code);
   await deleteFromQueue(work);
+  await recordStage("cloud-cleaned", { reason: "work removed from translation queue" });
   if (config.cleanupLocalAfterUpload) {
     await fs.promises.rm(workDir, { recursive: true, force: true });
   }
+  await recordStage("completed", { reason: "upload and cloud queue cleanup confirmed" });
   setRuntimeStatus("completed", `${code} 已上传并从待翻译队列删除`, code);
 };
 
@@ -2283,6 +2409,8 @@ const processWork = async (
   config,
   batchDownload,
   downloadedWorkDir = "",
+  state,
+  persistState,
 ) => {
   const code = normalizeCode(work?.source_id || work?.rj_code || work?.id);
   if (!code) throw new Error("队列作品缺少 RJ/VJ/BJ 编号");
@@ -2301,6 +2429,12 @@ const processWork = async (
       Number(config.downloadStablePolls),
     ));
   const whisper = getConfig()?.whisper || {};
+  if (state) {
+    updateWorkState(state, code, "ready-for-whisper", { work });
+    await persistState?.();
+    updateWorkState(state, code, "transcribing", { work });
+    await persistState?.();
+  }
   setRuntimeStatus("translate", `正在翻译 ${code}`, code);
   await translateSubtitles({
     exePath: whisper.exePath,
@@ -2316,11 +2450,13 @@ const processWork = async (
     config,
     workDir,
     downloadDir: batchDownload.downloadDir,
+    state,
+    persistState,
   });
   return { code, success: true };
 };
 
-const recoverExistingSubtitles = async (work, config) => {
+const recoverExistingSubtitles = async (work, config, state, persistState) => {
   const code = normalizeCode(work?.source_id || work?.rj_code || work?.id);
   if (!code) throw new Error("队列作品缺少 RJ/VJ/BJ 编号");
   const downloadDir = getAutomationDownloadDir();
@@ -2337,6 +2473,8 @@ const recoverExistingSubtitles = async (work, config) => {
     );
   }
   if (activity.lrcFileCount < activity.mediaFileCount) {
+    updateWorkState(state, code, "transcribing", { work, reason: "recovery subtitle completion" });
+    await persistState?.();
     const whisper = getConfig()?.whisper || {};
     setRuntimeStatus(
       "translate",
@@ -2363,6 +2501,8 @@ const recoverExistingSubtitles = async (work, config) => {
     `检测到 ${code} LRC/音频数量为 ${activity.lrcFileCount}/${activity.mediaFileCount}，跳过下载并进入打包`,
     code,
   );
+  updateWorkState(state, code, "packaged", { work, reason: "recovery package" });
+  await persistState?.();
   await packageUploadAndCleanupWork({
     work,
     code,
@@ -2473,6 +2613,11 @@ const runOnce = async ({ force = false } = {}) => {
       return true;
     });
     summary.discovered = candidates.length;
+    candidates.forEach((work) => {
+      const code = normalizeCode(work?.source_id || work?.rj_code || work?.id);
+      if (code) updateWorkState(state, code, "filtered", { work });
+    });
+    await writeState(state);
     logger.info(
       `[automation] 最近作品筛选: total=${recentWorks.length} candidates=${summary.discovered} missingCode=${filterStats.missingCode} completed=${filterStats.completed} alreadyQueued=${filterStats.alreadyQueued} historicalTranslated=${filterStats.historicalTranslated} existingSubtitle=${filterStats.existingSubtitle} tagMismatch=${filterStats.tagMismatch}`,
     );
@@ -2527,6 +2672,19 @@ const runOnce = async ({ force = false } = {}) => {
           normalizeCode(work?.source_id || work?.rj_code || work?.id),
         ),
     );
+    worksToProcess.forEach((work) => {
+      const code = normalizeCode(work?.source_id || work?.rj_code || work?.id);
+      if (code) updateWorkState(state, code, "queued", { work });
+    });
+    recoveryWorks.forEach((work) => {
+      const code = normalizeCode(work?.source_id || work?.rj_code || work?.id);
+      if (code) updateWorkState(state, code, "ready-for-whisper", { work });
+    });
+    downloadWorks.forEach((work) => {
+      const code = normalizeCode(work?.source_id || work?.rj_code || work?.id);
+      if (code) updateWorkState(state, code, "downloading", { work });
+    });
+    await writeState(state);
     const getWorkCodes = (works) =>
       works
         .map((work) =>
@@ -2556,7 +2714,7 @@ const runOnce = async ({ force = false } = {}) => {
         translationTracker.failedCodes.add(code);
         translationTracker.failedReasons.set(
           code,
-          state.failedCodes[code] || "",
+          state.workStates[code]?.failure?.message || "",
         );
       }
       publishTranslationProgress(translationTracker);
@@ -2614,12 +2772,17 @@ const runOnce = async ({ force = false } = {}) => {
         ]),
     );
     batchDownload.manualCodes.forEach((reason, code) => {
-      state.failedCodes[code] =
-        `${code} 下载轨道超过自动处理上限，需人工筛选；未提交 aria2，也不会重启其他下载任务: ${reason}`;
+      recordTranslationFailure(
+        state,
+        code,
+        `${code} 下载轨道超过自动处理上限；未提交 aria2，也不会重启其他下载任务: ${reason}`,
+        "downloading",
+        { classification: "manual-review", work: worksToProcess.find((item) => normalizeCode(item?.source_id || item?.rj_code || item?.id) === code) },
+      );
       summary.failed += 1;
       markTranslationProgress(code, "failed");
       logger.warn(
-        `[automation] ${code} 已移出下载池并保留待翻译队列：${state.failedCodes[code]}`,
+        `[automation] ${code} 已移出下载池并保留待翻译队列：${state.workStates[code]?.failure?.message}`,
       );
     });
     const activeRunCodes = new Set([
@@ -2672,12 +2835,17 @@ const runOnce = async ({ force = false } = {}) => {
         );
         if (!code) return;
         if (nextBatch.manualCodes.has(code)) {
-          state.failedCodes[code] =
-            `${code} 下载轨道超过自动处理上限，需人工筛选；未提交 aria2，也不会重启其他下载任务: ${nextBatch.manualCodes.get(code)}`;
+          recordTranslationFailure(
+            state,
+            code,
+            `${code} 下载轨道超过自动处理上限；未提交 aria2，也不会重启其他下载任务: ${nextBatch.manualCodes.get(code)}`,
+            "downloading",
+            { classification: "manual-review", work },
+          );
           summary.failed += 1;
           markTranslationProgress(code, "failed");
           logger.warn(
-            `[automation] ${code} 已移出下载池并保留待翻译队列：${state.failedCodes[code]}`,
+            `[automation] ${code} 已移出下载池并保留待翻译队列：${state.workStates[code]?.failure?.message}`,
           );
           return;
         }
@@ -2731,22 +2899,29 @@ const runOnce = async ({ force = false } = {}) => {
           translationTracker.currentCode = code;
           publishTranslationProgress(translationTracker, code);
           if (item.recovery) {
-            await recoverExistingSubtitles(item.work, config);
+            await recoverExistingSubtitles(item.work, config, state, persistState);
             summary.recovered += 1;
             logger.info(`[automation] ${code} 已从本地字幕恢复并上传`);
           } else {
-            await processWork(item.work, config, batchDownload, item.workDir);
+            await processWork(
+              item.work,
+              config,
+              batchDownload,
+              item.workDir,
+              state,
+              persistState,
+            );
           }
           state.completedCodes.push(code);
-          delete state.failedCodes[code];
+          updateWorkState(state, code, "completed", { reason: "upload and cloud queue cleanup confirmed" });
           summary.processed += 1;
           markTranslationProgress(code, "completed");
         } catch (error) {
-          state.failedCodes[code] = String(error?.message || error);
+          recordTranslationFailure(state, code, error, state.workStates[code]?.stage || "translation", { work: item.work });
           summary.failed += 1;
           markTranslationProgress(code, "failed");
           logger.error(
-            `[automation] ${code} 翻译 worker 处理失败: ${state.failedCodes[code]}`,
+            `[automation] ${code} 翻译 worker 处理失败: ${state.workStates[code]?.failure?.message}`,
           );
         } finally {
           translationWorkerActive = false;
@@ -2884,12 +3059,13 @@ const runOnce = async ({ force = false } = {}) => {
 
           for (const { code, reason } of failedWorks) {
             pendingWorks.delete(code);
-            state.failedCodes[code] =
-              `${code} aria2 下载连续失败，已重启 ${batchDownload.aria2RestartAttempts}/${batchDownload.aria2RestartMaxAttempts} 次，暂不翻译、打包或上传并保留待翻译队列: ${reason}`;
+            recordTranslationFailure(state, code,
+              `${code} aria2 下载连续失败，已重启 ${batchDownload.aria2RestartAttempts}/${batchDownload.aria2RestartMaxAttempts} 次，暂不翻译、打包或上传并保留待翻译队列: ${reason}`,
+              "downloading", { work: pendingWorks.get(code) });
             summary.failed += 1;
             markTranslationProgress(code, "failed");
             logger.error(
-              `[automation] ${code} 处理失败: ${state.failedCodes[code]}`,
+              `[automation] ${code} 处理失败: ${state.workStates[code]?.failure?.message}`,
             );
           }
           await persistState();
@@ -2918,12 +3094,13 @@ const runOnce = async ({ force = false } = {}) => {
 
           for (const { code, reason } of tempFileRecoveryWorks) {
             pendingWorks.delete(code);
-            state.failedCodes[code] =
-              `${code} aria2 已停止但 .aria2 临时文件无法续传，已重启 ${batchDownload.aria2RestartAttempts}/${batchDownload.aria2RestartMaxAttempts} 次，暂不翻译、打包或上传并保留待翻译队列: ${reason}`;
+            recordTranslationFailure(state, code,
+              `${code} aria2 已停止但 .aria2 临时文件无法续传，已重启 ${batchDownload.aria2RestartAttempts}/${batchDownload.aria2RestartMaxAttempts} 次，暂不翻译、打包或上传并保留待翻译队列: ${reason}`,
+              "downloading", { work: pendingWorks.get(code) });
             summary.failed += 1;
             markTranslationProgress(code, "failed");
             logger.error(
-              `[automation] ${code} 处理失败: ${state.failedCodes[code]}`,
+              `[automation] ${code} 处理失败: ${state.workStates[code]?.failure?.message}`,
             );
           }
           await persistState();
@@ -2952,12 +3129,13 @@ const runOnce = async ({ force = false } = {}) => {
 
           for (const { code, reason } of earlyRetryWorks) {
             pendingWorks.delete(code);
-            state.failedCodes[code] =
-              `${code} 下载未完整且 aria2 已停止，已重启 ${batchDownload.aria2RestartAttempts}/${batchDownload.aria2RestartMaxAttempts} 次，暂不翻译、打包或上传并保留待翻译队列: ${reason}`;
+            recordTranslationFailure(state, code,
+              `${code} 下载未完整且 aria2 已停止，已重启 ${batchDownload.aria2RestartAttempts}/${batchDownload.aria2RestartMaxAttempts} 次，暂不翻译、打包或上传并保留待翻译队列: ${reason}`,
+              "downloading", { work: pendingWorks.get(code) });
             summary.failed += 1;
             markTranslationProgress(code, "failed");
             logger.error(
-              `[automation] ${code} 处理失败: ${state.failedCodes[code]}`,
+              `[automation] ${code} 处理失败: ${state.workStates[code]?.failure?.message}`,
             );
           }
           await persistState();
@@ -3002,12 +3180,13 @@ const runOnce = async ({ force = false } = {}) => {
         }
 
         for (const [code] of pendingWorks) {
-          state.failedCodes[code] =
-            `${code} 下载连续超时，已重启 ${batchDownload.aria2RestartAttempts}/${batchDownload.aria2RestartMaxAttempts} 次，暂不翻译、打包或上传并保留待翻译队列`;
+          recordTranslationFailure(state, code,
+            `${code} 下载连续超时，已重启 ${batchDownload.aria2RestartAttempts}/${batchDownload.aria2RestartMaxAttempts} 次，暂不翻译、打包或上传并保留待翻译队列`,
+            "downloading", { work: pendingWorks.get(code) });
           summary.failed += 1;
           markTranslationProgress(code, "failed");
           logger.error(
-            `[automation] ${code} 处理失败: ${state.failedCodes[code]}`,
+            `[automation] ${code} 处理失败: ${state.workStates[code]?.failure?.message}`,
           );
         }
         pendingWorks.clear();
@@ -3063,68 +3242,77 @@ const schedule = () => {
   timer.unref?.();
 };
 
-export function setupTranslationAutomationIPC() {
-  [
-    "translation-automation-status",
-    "translation-automation-run",
-    "translation-automation-save-config",
-  ].forEach((channel) => {
-    try {
-      ipcMain.removeHandler(channel);
-    } catch {
-      // ignore
-    }
-  });
-  ipcMain.handle("translation-automation-status", () => ({
+export function getTranslationAutomationStatusForIpc() {
+  return {
     success: true,
     data: getTranslationAutomationStatus(),
-  }));
-  ipcMain.handle("translation-automation-run", () => {
-    currentRunPromise = runOnce({ force: true });
-    return currentRunPromise;
+  };
+}
+
+export function runTranslationAutomationForIpc() {
+  currentRunPromise = runOnce({ force: true });
+  return currentRunPromise;
+}
+
+export async function saveTranslationAutomationConfigForIpc(next) {
+  const result = await saveConfig({
+    translationAutomation: { ...getRuntimeConfig(), ...(next || {}) },
   });
-  ipcMain.handle("translation-automation-save-config", async (_event, next) => {
-    const result = await saveConfig({
-      translationAutomation: { ...getRuntimeConfig(), ...(next || {}) },
-    });
-    if (!result) {
-      logger.error("[automation] 保存运行策略失败");
-      return {
-        success: false,
-        error: "配置文件写入失败，请检查日志和文件权限",
-      };
-    }
-    schedule();
-    const config = getRuntimeConfig();
-    logger.info(
-      `[automation] 运行策略已保存: enabled=${config.enabled} window=${config.startHour}-${config.endHour} maxWorks=${config.maxWorksPerCycle}`,
-    );
-    if (config.enabled && config.runOnStartup && !running) {
-      currentRunPromise = runOnce().catch((error) => {
-        logger.error(
-          "[automation] 保存策略后启动任务失败",
-          error?.message || error,
-        );
-      });
-    }
+  if (!result) {
+    logger.error("[automation] 保存运行策略失败");
     return {
-      success: true,
-      data: {
-        config,
-        scheduled: Boolean(timer),
-        runtimeStatus: getVisibleRuntimeStatus(),
-      },
+      success: false,
+      error: "配置文件写入失败，请检查日志和文件权限",
     };
-  });
+  }
   schedule();
-  void migrateLegacyScanInterval().then((migrated) => {
-    if (migrated) schedule();
-  });
+  const config = getRuntimeConfig();
+  logger.info(
+    `[automation] 运行策略已保存: enabled=${config.enabled} window=${config.startHour}-${config.endHour} maxWorks=${config.maxWorksPerCycle}`,
+  );
+  if (config.enabled && config.runOnStartup && !running) {
+    currentRunPromise = runOnce().catch((error) => {
+      logger.error(
+        "[automation] 保存策略后启动任务失败",
+        error?.message || error,
+      );
+    });
+  }
+  return {
+    success: true,
+    data: {
+      config,
+      scheduled: Boolean(timer),
+      runtimeStatus: getVisibleRuntimeStatus(),
+    },
+  };
+}
+
+export function startTranslationAutomationRuntime() {
+  schedule();
   if (getRuntimeConfig().enabled && getRuntimeConfig().runOnStartup) {
-    setTimeout(() => {
+    if (startupTimer) clearTimeout(startupTimer);
+    startupTimer = setTimeout(() => {
+      startupTimer = null;
       currentRunPromise = runOnce().catch((error) => {
         logger.error("[automation] 启动任务失败", error?.message || error);
       });
     }, 5000).unref?.();
   }
+}
+
+export async function stopTranslationAutomation() {
+  if (startupTimer) {
+    clearTimeout(startupTimer);
+    startupTimer = null;
+  }
+  if (timer) {
+    clearInterval(timer);
+    timer = null;
+  }
+  if (currentRunPromise) {
+    await currentRunPromise.catch(() => undefined);
+    currentRunPromise = null;
+  }
+  activeQueuedWorkReceiver = null;
 }

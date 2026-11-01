@@ -59,12 +59,8 @@ const unit = ref(props.modelValue.unit || "m");
 const sliderValue = ref(30);
 const inputValue = ref(30);
 const durationSliderStyle = computed(() => {
-  const currentValue = Number(sliderValue.value);
-  const safeValue = Number.isFinite(currentValue) ? currentValue : 0;
-  const clamped = Math.min(180, Math.max(0, safeValue));
-  const progress = ((clamped / 180) * 100).toFixed(2);
   return {
-    background: `linear-gradient(90deg, rgba(15,108,189,0.98) 0%, rgba(72,166,255,0.98) ${progress}%, rgba(188,194,205,0.72) ${progress}%, rgba(188,194,205,0.72) 100%)`,
+    background: `var(--ui-action-primary)`,
     "--slider-track-glow": "rgba(15,108,189,0.34)",
     "--slider-thumb-glow": "rgba(15,108,189,0.6)",
   };
@@ -121,7 +117,7 @@ watch(
     rgba(255, 253, 245, 0.08) 8%
   );
   border: 1px solid var(--comp-border);
-  border-radius: 18px;
+  border-radius: var(--ui-radius-md, 10px);
   padding: 18px;
 }
 .picker-header {
@@ -141,7 +137,7 @@ watch(
 .mode-selector {
   display: flex;
   gap: 10px;
-  margin-bottom: 18px;
+  margin-bottom: 12px;
 }
 .mode-selector label {
   flex: 1;
@@ -149,15 +145,15 @@ watch(
   align-items: center;
   justify-content: center;
   gap: 8px;
-  min-height: 40px;
-  padding: 10px 12px;
+  min-height: 36px;
+  padding: 7px 12px;
   background: color-mix(
     in srgb,
     var(--comp-control-bg) 88%,
     rgba(255, 253, 245, 0.08) 8%
   );
   border: 1px solid var(--comp-control-border);
-  border-radius: 14px;
+  border-radius: var(--ui-radius-sm, 6px);
   cursor: pointer;
   color: var(--comp-text);
   transition: all 0.18s ease;
@@ -166,18 +162,13 @@ watch(
   border-color: color-mix(in srgb, var(--comp-accent) 30%, transparent);
 }
 .mode-selector label.active {
-  background: linear-gradient(
-    135deg,
-    color-mix(in srgb, var(--comp-accent) 90%, #cbd39c 10%),
-    color-mix(in srgb, var(--comp-accent) 72%, #7f8750 28%)
-  );
-  border-color: color-mix(in srgb, var(--comp-accent) 58%, transparent);
-  color: #fffdf4;
-  box-shadow: 0 12px 22px
-    color-mix(in srgb, var(--comp-accent) 16%, transparent);
+  background: color-mix(in srgb, var(--comp-accent) 12%, var(--comp-control-bg));
+  border-color: var(--comp-accent);
+  color: var(--comp-text);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--comp-accent) 18%, transparent);
 }
 .slider-container {
-  margin-bottom: 18px;
+  margin-bottom: 12px;
 }
 .duration-slider {
   width: 100%;
@@ -185,7 +176,7 @@ watch(
   -webkit-appearance: none;
   appearance: none;
   border: none;
-  border-radius: 999px;
+  border-radius: var(--ui-radius-sm, 6px);
   background-size: 100% 100%;
   box-shadow:
     inset 0 0 0 1px rgba(205, 214, 141, 0.18),
@@ -216,12 +207,7 @@ watch(
   margin-top: -5px;
   border-radius: 50%;
   border: 3px solid rgba(255, 253, 245, 0.94);
-  background: radial-gradient(
-    circle at 35% 35%,
-    #d8dfab 0%,
-    #adb571 58%,
-    #8f985f 100%
-  );
+  background: var(--ui-action-primary);
   box-shadow:
     0 0 0 5px
       color-mix(
@@ -246,7 +232,7 @@ watch(
 .duration-slider::-moz-range-track {
   height: 10px;
   border: none;
-  border-radius: 999px;
+  border-radius: var(--ui-radius-sm, 6px);
   background: transparent;
 }
 .duration-slider::-moz-range-thumb {
@@ -254,12 +240,7 @@ watch(
   height: 20px;
   border-radius: 50%;
   border: 3px solid rgba(255, 253, 245, 0.94);
-  background: radial-gradient(
-    circle at 35% 35%,
-    #d8dfab 0%,
-    #adb571 58%,
-    #8f985f 100%
-  );
+  background: var(--ui-action-primary);
   box-shadow:
     0 0 0 5px
       color-mix(
@@ -286,15 +267,15 @@ watch(
 .input-container {
   display: grid;
   grid-template-columns: 1fr 96px;
-  gap: 10px;
+  gap: 8px;
   align-items: center;
 }
 .duration-input,
 .unit-select {
-  min-height: 42px;
-  padding: 10px 12px;
+  min-height: 38px;
+  padding: 8px 12px;
   border: 1px solid var(--comp-control-border);
-  border-radius: 14px;
+  border-radius: var(--ui-radius-sm, 6px);
   background: color-mix(
     in srgb,
     var(--comp-control-bg) 92%,
@@ -307,14 +288,19 @@ watch(
   color: var(--comp-muted);
 }
 .clear-btn {
-  width: 100%;
-  min-height: 40px;
-  margin-top: 14px;
-  padding: 10px;
-  background: color-mix(in srgb, #7e4d4d 78%, #221414 22%);
-  border: 1px solid color-mix(in srgb, #c98b8b 42%, transparent);
-  border-radius: 14px;
-  color: #fffdf4;
+  width: auto;
+  min-height: 34px;
+  margin-top: 10px;
+  padding: 7px 12px;
+  background: transparent;
+  border: 1px solid var(--ui-action-danger, #b42318);
+  border-radius: var(--ui-radius-sm, 6px);
+  color: var(--ui-action-danger, #b42318);
   cursor: pointer;
 }
+.clear-btn:hover { background: color-mix(in srgb, var(--ui-action-danger, #b42318) 8%, transparent); }
 </style>
+
+
+
+

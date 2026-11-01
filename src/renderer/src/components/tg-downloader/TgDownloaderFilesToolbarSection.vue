@@ -10,9 +10,10 @@
     </div>
 
     <div class="files-actions">
-      <label class="concurrency-control">
+      <label class="concurrency-control" for="tg-downloader-concurrency">
         <span>并发</span>
         <input
+          id="tg-downloader-concurrency"
           :value="concurrentCount"
           type="number"
           min="1"

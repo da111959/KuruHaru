@@ -1,13 +1,33 @@
 import { ref } from "vue";
 import { openDirectory, openFile } from "../api/dialogApi";
 import { scanLocalArchives, readFile } from "../api/localApi";
-import { asmrDeleteByRJ } from "../api/asmrApi";
+import { asmrCloudDeletePreview, asmrCloudDeleteExecute } from "../api/asmrApi";
 
-export const useLocalCleaner = () => {
+export const useLocalCleaner = ({ message, dialog } = {}) => {
   const localItems = ref([]);
   const selectedPaths = ref([]);
   const isBusy = ref(false);
   const txtRJCodes = ref([]);
+  const notify = (type, content) => {
+    if (message?.[type]) message[type](content);
+    else console.warn(`[local-cleaner] ${type}: ${content}`);
+  };
+  const askConfirmation = (content) => {
+    if (!dialog?.warning) {
+      return Promise.resolve(false);
+    }
+    return new Promise((resolve) => {
+      dialog.warning({
+        title: "请确认操作",
+        content,
+        positiveText: "确认",
+        negativeText: "取消",
+        onPositiveClick: () => resolve(true),
+        onNegativeClick: () => resolve(false),
+        onClose: () => resolve(false),
+      });
+    });
+  };
 
   const scanFolder = async () => {
     const res = await openDirectory();
@@ -18,7 +38,7 @@ export const useLocalCleaner = () => {
         localItems.value = scanRes || [];
         selectedPaths.value = [];
       } catch (e) {
-        alert("扫描出错: " + e.message);
+        notify("error", "扫描出错: " + e.message);
       }
       isBusy.value = false;
     }
@@ -38,10 +58,10 @@ export const useLocalCleaner = () => {
           txtRJCodes.value = codes
             ? [...new Set(codes.map((c) => c.toUpperCase()))]
             : [];
-          alert(`导入 ${txtRJCodes.value.length} 个RJ/VJ/BJ号`);
+          notify("success", `导入 ${txtRJCodes.value.length} 个RJ/VJ/BJ号`);
         }
       } catch (e) {
-        alert("读取文件失败: " + e.message);
+        notify("error", "读取文件失败: " + e.message);
       }
     }
   };
@@ -53,7 +73,7 @@ export const useLocalCleaner = () => {
   const copyRJCodes = () => {
     const text = txtRJCodes.value.join("\n");
     navigator.clipboard.writeText(text).then(() => {
-      alert("已复制到剪贴板");
+      notify("success", "已复制到剪贴板");
     });
   };
 
@@ -82,7 +102,7 @@ export const useLocalCleaner = () => {
 
   // 扫描文件夹后的云端删除
   const executeDelete = async () => {
-    if (!confirm(`确认云端删除 ${selectedPaths.value.length} 个？`)) return;
+    if (isBusy.value || !(await askConfirmation(`确认云端删除 ${selectedPaths.value.length} 个？`))) return;
 
     isBusy.value = true;
     try {
@@ -92,11 +112,14 @@ export const useLocalCleaner = () => {
       const rjCodes = selectedItems.map((i) => i.code).filter(Boolean);
 
       if (rjCodes.length > 0) {
-        const cloudRes = await asmrDeleteByRJ(rjCodes);
+        const preview = await asmrCloudDeletePreview({ kind: "rj", rjCodes });
+        if (!preview?.success) throw new Error(preview?.error || "无法生成云端删除预览");
+        if (!(await askConfirmation(`云端预览 ${preview.preview.id} 已生成，确认执行 ${rjCodes.length} 个编号的删除？`))) return;
+        const cloudRes = await asmrCloudDeleteExecute(preview.preview.id);
         if (cloudRes.success) {
-          alert(`云端删除 ${cloudRes.deletedCount || 0} 个作品`);
+          notify("success", `云端删除 ${cloudRes.deletedCount || 0} 个作品`);
         } else {
-          alert("删除失败: " + (cloudRes.error || "未知错误"));
+          notify("error", "删除失败: " + (cloudRes.error || "未知错误"));
         }
       }
 
@@ -111,14 +134,17 @@ export const useLocalCleaner = () => {
 
   // TXT导入后的云端删除
   const executeCloudDelete = async () => {
-    if (!confirm(`确认删除云端 ${txtRJCodes.value.length} 个作品？`)) return;
+    if (isBusy.value || !(await askConfirmation(`确认删除云端 ${txtRJCodes.value.length} 个作品？`))) return;
 
     isBusy.value = true;
     try {
       const rjList = JSON.parse(JSON.stringify(txtRJCodes.value));
-      const result = await asmrDeleteByRJ(rjList);
+      const preview = await asmrCloudDeletePreview({ kind: "rj", rjCodes: rjList });
+      if (!preview?.success) throw new Error(preview?.error || "无法生成云端删除预览");
+      if (!(await askConfirmation(`云端预览 ${preview.preview.id} 已生成，确认执行删除？`))) return;
+      const result = await asmrCloudDeleteExecute(preview.preview.id);
       if (result.success) {
-        alert(`云端删除 ${result.deletedCount} 个作品`);
+        notify("success", `云端删除 ${result.deletedCount} 个作品`);
         txtRJCodes.value = [];
       }
     } finally {

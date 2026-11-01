@@ -1,0 +1,99 @@
+/* Application shell and responsive behavior. */
+#app .app-shell {
+  --workspace-bg: var(--ui-canvas);
+  --workspace-bg-strong: var(--ui-canvas);
+  --sidebar-bg: var(--ui-surface-muted);
+  --surface-1: var(--ui-surface);
+  --surface-2: var(--ui-surface-muted);
+  --text-primary: var(--ui-text-primary);
+  --text-secondary: var(--ui-text-secondary);
+  --text-tertiary: var(--ui-text-secondary);
+  --divider: var(--ui-divider);
+  --hover-bg: color-mix(in srgb, var(--ui-action-secondary) 76%, var(--ui-action-primary) 24%);
+  --active-bg: color-mix(in srgb, var(--ui-action-secondary) 62%, var(--ui-action-primary) 38%);
+  --selected-bg: color-mix(in srgb, var(--ui-action-secondary) 62%, var(--ui-action-primary) 38%);
+  --selected-border: var(--ui-action-primary);
+  --accent: var(--ui-action-primary);
+  background: var(--workspace-bg) !important;
+  color: var(--text-primary);
+}
+
+#app :is(.app-shell, .workspace, .sidebar, .main-area, .content-scroll) {
+  background-image: none !important;
+  box-shadow: none !important;
+}
+
+#app :is(.workspace, .main-area, .content-scroll) {
+  background: var(--workspace-bg) !important;
+}
+
+#app .sidebar {
+  background: var(--sidebar-bg) !important;
+  border-right: 1px solid var(--ui-border);
+}
+
+#app :is(.logo, .nav-item, .nav-group-header, .nav-group-pill, .submenu-item) {
+  border-radius: var(--ui-radius-sm);
+  transition: background-color var(--ui-motion-fast) ease, color var(--ui-motion-fast) ease, border-color var(--ui-motion-fast) ease;
+}
+
+#app :is(.logo:hover, .nav-item:hover, .nav-group-header:hover, .nav-group-pill:hover, .submenu-item:hover) {
+  background: var(--hover-bg) !important;
+}
+
+#app :is(.nav-item.active, .nav-group-header.active, .nav-group-pill.active, .submenu-item.active) {
+  background: var(--selected-bg) !important;
+  border-color: var(--selected-border) !important;
+  color: var(--text-primary) !important;
+  box-shadow: inset 3px 0 0 var(--selected-border) !important;
+}
+
+#app :is(.nav-icon, .nav-group-icon, .submenu-item-icon) {
+  color: currentColor;
+}
+
+#app .skip-link {
+  position: fixed;
+  top: 8px;
+  left: 8px;
+  z-index: 300;
+  transform: translateY(-160%);
+  padding: 10px 14px;
+  border: 2px solid var(--ui-focus-ring);
+  border-radius: var(--ui-radius-sm);
+  background: var(--ui-surface-raised);
+  color: var(--ui-text-primary);
+  text-decoration: none;
+  transition: transform var(--ui-motion-fast) ease;
+}
+
+#app .skip-link:focus {
+  transform: translateY(0);
+}
+
+#app :is(button, a, input, textarea, select, summary):focus-visible {
+  outline: 3px solid var(--ui-focus-ring) !important;
+  outline-offset: 2px;
+}
+
+@media (max-width: 1024px) {
+  #app .sidebar-overlay {
+    background: color-mix(in srgb, var(--ui-text-primary) 18%, transparent) !important;
+    backdrop-filter: none !important;
+  }
+
+  #app .sidebar.open {
+    box-shadow: 12px 0 28px color-mix(in srgb, var(--ui-text-primary) 20%, transparent);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #app *,
+  #app *::before,
+  #app *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

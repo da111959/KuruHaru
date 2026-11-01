@@ -3,7 +3,7 @@
     <div class="page-header activity-header">
       <div class="page-header-main">
         <span class="page-eyebrow">Telegram / Recent Activity</span>
-        <h2 class="page-title">最近上传</h2>
+        <h1 class="page-title">最近上传</h1>
         <p class="page-header-subtitle">
           在同一工作区完成扫描、排除与下载，保持近期任务流简洁可控。
         </p>
@@ -21,6 +21,7 @@
           <button
             class="btn-secondary"
             :disabled="isScanning"
+            :aria-busy="isScanning"
             @click="scanRecentActivity"
           >
             {{ isScanning ? "扫描中..." : "扫描讨论组" }}
@@ -42,9 +43,12 @@
       <div class="filter-row">
         <div class="filter-group filter-group-primary">
           <span class="section-caption">排除规则</span>
-          <label>排除已下载的 RJ / VJ / BJ 号</label>
+          <label for="recent-activity-exclude-file"
+            >排除已下载的 RJ / VJ / BJ 号</label
+          >
           <div class="file-input-row">
             <input
+              id="recent-activity-exclude-file"
               v-model="excludeFilePath"
               type="text"
               placeholder="选择 TXT 文件路径（包含已有 RJ / VJ / BJ 号）"
@@ -91,13 +95,26 @@
         </div>
       </div>
 
-      <div v-if="isScanning" class="scanning-overlay">
+      <div
+        v-if="isScanning"
+        class="scanning-overlay"
+        role="status"
+        aria-live="polite"
+        :aria-busy="isScanning"
+      >
         <div class="loader"></div>
         <p>正在连接 Telegram 扫描文件，请稍候...</p>
       </div>
 
+      <div v-else-if="scanError" class="activity-error" role="alert">
+        <span>{{ scanError }}</span>
+        <button class="btn-secondary" @click="scanRecentActivity">
+          重试扫描
+        </button>
+      </div>
+
       <div v-else-if="allFiles.length === 0" class="empty-activity">
-        <span class="empty-icon">??</span>
+        <span class="empty-icon" aria-hidden="true"></span>
         <p>暂无文件，点击扫描讨论组获取</p>
         <button class="btn-primary" @click="scanRecentActivity">
           扫描讨论组
@@ -114,6 +131,16 @@
             skipped: skipFiles.some((f) => f.id === file.id),
           }"
           @click="toggleSelect(file.id)"
+          @keydown.enter.prevent="
+            !skipFiles.some((f) => f.id === file.id) && toggleSelect(file.id)
+          "
+          @keydown.space.prevent="
+            !skipFiles.some((f) => f.id === file.id) && toggleSelect(file.id)
+          "
+          role="checkbox"
+          :tabindex="skipFiles.some((f) => f.id === file.id) ? -1 : 0"
+          :aria-checked="selectedFileIds.has(file.id)"
+          :aria-disabled="skipFiles.some((f) => f.id === file.id)"
         >
           <input
             type="checkbox"
@@ -151,8 +178,9 @@
           下一页
         </button>
         <div class="concurrent-setting">
-          <label>并发</label>
+          <label for="recent-activity-concurrency">并发（1-10）</label>
           <input
+            id="recent-activity-concurrency"
             v-model.number="concurrentCount"
             type="number"
             min="1"
@@ -163,7 +191,15 @@
       </div>
     </div>
 
-    <div v-if="isDownloading" class="progress-section card">
+    <div
+      v-if="isDownloading"
+      class="progress-section card"
+      role="progressbar"
+      :aria-valuenow="downloadProgress"
+      aria-valuemin="0"
+      aria-valuemax="100"
+      aria-live="polite"
+    >
       <div class="progress-header">
         <span>下载进度 ({{ concurrentCount }} 个并发)</span>
         <span>{{ downloadProgress }}%</span>
@@ -192,17 +228,19 @@
           >失败 {{ failedFiles.length }}</span
         >
       </div>
+      <p v-if="failedFiles.length" class="detail-failed" role="alert">
+        {{ failedFiles.length }} 个文件失败，可查看失败明细后重试。
+      </p>
       <button class="cancel-btn" @click="cancelDownload">取消</button>
     </div>
   </div>
 </template>
 
 <script setup>
-import { useMessage, useDialog } from "naive-ui";
+import { createMessage } from "../../utils/ui-feedback";
 import { useRecentActivityPageController } from "../../composables/useRecentActivityPageController";
 
-const message = useMessage();
-const dialog = useDialog();
+const message = createMessage();
 
 const {
   allFiles,
@@ -215,6 +253,7 @@ const {
   totalPages,
   selectedFiles,
   scanRecentActivity,
+  scanError,
   browseFile,
   toggleSelect,
   selectAll,
@@ -234,7 +273,6 @@ const {
   formatSize,
 } = useRecentActivityPageController({
   message,
-  dialog,
 });
 </script>
 <style scoped src="./RecentActivityPageContentCore.css"></style>

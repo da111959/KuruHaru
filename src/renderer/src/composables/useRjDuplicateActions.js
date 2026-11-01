@@ -1,11 +1,17 @@
-import { tgScanRjDuplicates, tgDeleteDuplicateMessages } from "../api/tgApi";
+import {
+  tgScanRjDuplicates,
+  tgPreviewRjDuplicateDelete,
+  tgExecuteRjDuplicateDelete,
+  tgExportRjDuplicateAudit,
+} from "../api/tgApi";
 import {
   toMessageId,
   getMessageId,
   getSenderId,
   getSenderName,
-  collectMessageIds,
 } from "../modules/rj-duplicate/message-helpers";
+import { saveFile } from "../api/dialogApi";
+import { writeFile } from "../api/localApi";
 
 const getDeleteFailureText = (result) => {
   const firstError = Array.isArray(result?.errors) ? result.errors[0] : null;
@@ -62,6 +68,7 @@ export const useRjDuplicateActions = ({
   isScanning,
   isDeleting,
   scanResults,
+  scanSnapshotId,
   hasScanned,
   scanProgress,
   scanProgressText,
@@ -139,6 +146,7 @@ export const useRjDuplicateActions = ({
         scanResults.value = Array.isArray(result.duplicates)
           ? result.duplicates
           : [];
+        scanSnapshotId.value = result.snapshotId || "";
         statistics.value = result.statistics;
         message.success(
           `扫描完成，找到 ${result.statistics.duplicateRJs} 个重复RJ号`,
@@ -157,7 +165,9 @@ export const useRjDuplicateActions = ({
   };
 
   const handleBatchDelete = async () => {
-    const messageIds = collectMessageIds(duplicatesToDelete.value);
+    const messageIds = duplicatesToDelete.value
+      .map((row) => getMessageId(row.userMessage))
+      .filter((id) => id !== null);
 
     if (messageIds.length === 0) {
       message.warning("没有需要删除的消息");
@@ -166,8 +176,8 @@ export const useRjDuplicateActions = ({
 
     const confirmed = await confirmDeleteAction(dialog, {
       title: "确认删除",
-      content: `确定要删除 ${duplicatesToDelete.value.length} 个待删除配对中的所有消息吗？此操作不可恢复。`,
-      positiveText: "删除",
+      content: `将先创建不可变删除预览，目标 ${duplicatesToDelete.value.length} 个旧配对中的消息；最新配对不会进入计划。确认继续？`,
+      positiveText: "查看删除预览",
       negativeText: "取消",
     });
 
@@ -181,7 +191,28 @@ export const useRjDuplicateActions = ({
         messageIds,
       });
 
-      const result = await tgDeleteDuplicateMessages(messageIds);
+      const previewResult = await tgPreviewRjDuplicateDelete({
+        snapshotId: scanSnapshotId.value,
+        messageIds,
+      });
+
+      if (!previewResult?.success || !previewResult.preview) {
+        throw new Error(previewResult?.error || "无法创建删除预览");
+      }
+
+      const previewConfirmed = await confirmDeleteAction(dialog, {
+        title: "执行快照删除计划",
+        content: `快照 ${previewResult.preview.snapshotId} / 预览 ${previewResult.preview.id}\n目标消息：${previewResult.preview.targetCount} 条\n计划编号：${[...new Set(previewResult.preview.rows.map((row) => row.rjCode))].join(", ")}\n此操作不可恢复，且只会执行该预览快照中的对象。`,
+        positiveText: "执行删除",
+        negativeText: "返回",
+      });
+      if (!previewConfirmed) return;
+
+      const execution = await tgExecuteRjDuplicateDelete(previewResult.preview.id);
+      if (!execution?.previewId) {
+        throw new Error(execution?.error || "删除执行失败");
+      }
+      const result = execution;
 
       console.info("[RJ重复检测] tg-delete-duplicate-messages 响应", {
         scene: "batch",
@@ -200,10 +231,14 @@ export const useRjDuplicateActions = ({
       if (result?.success) {
         message.success(`成功删除 ${deletedCount} 条消息`);
       } else if (result?.partial) {
+        statistics.value.partialFailure = true;
+        statistics.value.failedCount = result?.errors?.length || 0;
         message.warning(
           `部分删除成功：成功 ${deletedCount} 条，失败 ${result?.errors?.length || 0} 条。失败原因：${getDeleteFailureText(result)}`,
         );
       } else {
+        statistics.value.partialFailure = true;
+        statistics.value.failedCount = result?.errors?.length || 0;
         message.error(`删除失败：${getDeleteFailureText(result)}`);
       }
     } catch (error) {
@@ -214,11 +249,15 @@ export const useRjDuplicateActions = ({
   };
 
   const handleSelectedDelete = async () => {
-    const selectedData = scanResults.value.filter((row) =>
-      selectedRowKeySet.value.has(getMessageId(row.userMessage)),
+    const selectedData = scanResults.value.filter(
+      (row) =>
+        row.keepStatus === "delete" &&
+        selectedRowKeySet.value.has(getMessageId(row.userMessage)),
     );
 
-    const messageIds = collectMessageIds(selectedData);
+    const messageIds = selectedData
+      .map((row) => getMessageId(row.userMessage))
+      .filter((id) => id !== null);
 
     if (messageIds.length === 0) {
       message.warning("没有选中的消息");
@@ -227,8 +266,8 @@ export const useRjDuplicateActions = ({
 
     const confirmed = await confirmDeleteAction(dialog, {
       title: "确认删除",
-      content: `确定要删除选中的 ${selectedData.length} 个配对中的所有消息吗？此操作不可恢复。`,
-      positiveText: "删除",
+      content: `将先创建不可变删除预览，目标 ${selectedData.length} 个旧配对中的消息；最新配对不会进入计划。确认继续？`,
+      positiveText: "查看删除预览",
       negativeText: "取消",
     });
 
@@ -242,7 +281,22 @@ export const useRjDuplicateActions = ({
         messageIds,
       });
 
-      const result = await tgDeleteDuplicateMessages(messageIds);
+      const previewResult = await tgPreviewRjDuplicateDelete({
+        snapshotId: scanSnapshotId.value,
+        messageIds,
+      });
+      if (!previewResult?.success || !previewResult.preview) {
+        throw new Error(previewResult?.error || "无法创建删除预览");
+      }
+      const previewConfirmed = await confirmDeleteAction(dialog, {
+        title: "执行快照删除计划",
+        content: `预览 ${previewResult.preview.id}\n目标消息：${previewResult.preview.targetCount} 条\n编号：${[...new Set(previewResult.preview.rows.map((row) => row.rjCode))].join(", ")}\n只执行快照中的消息，且不可重复提交。`,
+        positiveText: "执行删除",
+        negativeText: "返回",
+      });
+      if (!previewConfirmed) return;
+      const result = await tgExecuteRjDuplicateDelete(previewResult.preview.id);
+      if (!result?.previewId) throw new Error(result?.error || "删除执行失败");
 
       console.info("[RJ重复检测] tg-delete-duplicate-messages 响应", {
         scene: "selected",
@@ -261,10 +315,14 @@ export const useRjDuplicateActions = ({
       if (result?.success) {
         message.success(`成功删除 ${deletedCount} 条消息`);
       } else if (result?.partial) {
+        statistics.value.partialFailure = true;
+        statistics.value.failedCount = result?.errors?.length || 0;
         message.warning(
           `部分删除成功：成功 ${deletedCount} 条，失败 ${result?.errors?.length || 0} 条。失败原因：${getDeleteFailureText(result)}`,
         );
       } else {
+        statistics.value.partialFailure = true;
+        statistics.value.failedCount = result?.errors?.length || 0;
         message.error(`删除失败：${getDeleteFailureText(result)}`);
       }
     } catch (error) {
@@ -274,9 +332,30 @@ export const useRjDuplicateActions = ({
     }
   };
 
+  const exportAudit = async () => {
+    try {
+      const result = await tgExportRjDuplicateAudit();
+      if (!result?.success) throw new Error(result?.error || "读取审计记录失败");
+      const saved = await saveFile({
+        defaultPath: `rj-duplicate-audit-${new Date().toISOString().slice(0, 10)}.json`,
+        filters: [{ name: "JSON", extensions: ["json"] }],
+      });
+      if (!saved?.filePath) return;
+      const writeResult = await writeFile({
+        path: saved.filePath,
+        content: JSON.stringify(result.data, null, 2),
+      });
+      if (!writeResult?.success) throw new Error(writeResult?.error || "写入失败");
+      message.success("重复检测快照和删除审计已导出");
+    } catch (error) {
+      message.error(`导出失败：${error.message}`);
+    }
+  };
+
   return {
     handleScan,
     handleBatchDelete,
     handleSelectedDelete,
+    exportAudit,
   };
 };

@@ -1,22 +1,38 @@
 <template>
   <div class="page-container chinese-list-theme">
     <div class="page-header">
-      <h2 class="page-title">汉化列表</h2>
+      <div class="page-header-copy">
+        <p class="page-eyebrow">数据工具</p>
+        <h1 class="page-title">汉化列表</h1>
+        <p class="page-header-subtitle">汇总 TXT、Telegram 和 API 来源，去重后导出可复用的作品编号清单。</p>
+      </div>
       <div class="header-actions">
-        <button class="btn-secondary" @click="showHelp = true">使用说明</button>
+        <button
+          ref="helpTriggerRef"
+          class="btn-secondary"
+          @click="showHelp = true"
+        >
+          使用说明
+        </button>
       </div>
     </div>
 
     <!-- 数据源配置 -->
-    <div class="config-section card">
-      <h3 class="section-title">数据源配置</h3>
+    <div class="config-section card workbench-card">
+      <div class="section-heading">
+        <div>
+          <p class="section-kicker">INPUTS</p>
+          <h2 class="section-title">数据源配置</h2>
+        </div>
+        <span class="section-note">三种来源自动去重</span>
+      </div>
 
       <!-- 基准文件/手动导入 -->
       <div class="source-item">
         <div class="source-header">
-          <span class="source-icon">📁</span>
-          <span class="source-label">TXT导入（基准/手动）</span>
-          <span v-if="txtRJCount > 0" class="badge-success"
+          <span class="source-icon source-icon-txt" aria-hidden="true">TXT</span>
+          <span class="source-label">TXT 导入（基准 / 手动）</span>
+          <span v-if="txtRJCount > 0" class="source-badge badge-success"
             >{{ txtRJCount }} 个</span
           >
         </div>
@@ -29,31 +45,37 @@
           @dragover.prevent="isDraggingTxt = true"
           @dragleave="isDraggingTxt = false"
           @drop.prevent="handleTxtDrop"
+          role="button"
+          tabindex="0"
+          aria-label="拖入或选择 TXT 文件"
+          @keydown.enter.prevent="txtFileInput?.click()"
+          @keydown.space.prevent="txtFileInput?.click()"
         >
           <input
             ref="txtFileInput"
             type="file"
             accept=".txt"
             multiple
-            style="display: none"
+            class="visually-hidden"
             @change="handleTxtFileSelect"
           />
-          <p v-if="txtRJCount === 0">
-            拖入一个或多个TXT文件到这里，或点击选择文件
-          </p>
+          <p v-if="txtRJCount === 0">拖入一个或多个TXT文件到这里，或点击选择文件</p>
           <p v-else>已加载 {{ txtRJCount }} 个RJ/VJ/BJ号，点击可继续添加</p>
+          <button type="button" class="btn-secondary" @click.stop="txtFileInput?.click()" @keydown.stop>
+            选择 TXT 文件
+          </button>
         </div>
       </div>
 
       <!-- TG数据 -->
       <div class="source-item">
         <div class="source-header">
-          <span class="source-icon">📱</span>
-          <span class="source-label">TG讨论组数据</span>
-          <span v-if="tgRJCount > 0" class="badge-info"
+          <span class="source-icon source-icon-tg" aria-hidden="true">TG</span>
+          <span class="source-label">TG 讨论组数据</span>
+          <span v-if="tgRJCount > 0" class="source-badge badge-info"
             >{{ tgRJCount }} 个</span
           >
-          <span v-else class="badge-warning">未读取</span>
+          <span v-else class="source-badge badge-warning">未读取</span>
         </div>
         <button
           class="btn-secondary"
@@ -67,9 +89,9 @@
       <!-- API扫描 -->
       <div class="source-item">
         <div class="source-header">
-          <span class="source-icon">🌐</span>
-          <span class="source-label">API扫描（汉化/字幕/多语种）</span>
-          <span v-if="apiRJCount > 0" class="badge-info"
+          <span class="source-icon source-icon-api" aria-hidden="true">API</span>
+          <span class="source-label">API 扫描（汉化 / 字幕 / 多语种）</span>
+          <span v-if="apiRJCount > 0" class="source-badge badge-info"
             >{{ apiRJCount }} 个</span
           >
         </div>
@@ -84,24 +106,30 @@
         </div>
         <!-- 自定义路径设置 -->
         <div class="path-setting">
-          <span class="path-label">TXT路径：</span>
-          <input
-            v-model="txtFilePath"
-            type="text"
-            class="path-input"
-            placeholder="留空则使用默认路径"
-            @blur="savePathSetting"
-          />
-          <button class="btn-secondary btn-small" @click="selectPath">
-            选择文件夹
-          </button>
-          <button
-            v-if="txtFilePath"
-            class="btn-secondary btn-small"
-            @click="clearPathSetting"
-          >
-            恢复默认
-          </button>
+          <div class="path-copy">
+            <label class="path-label" for="chinese-list-path">扫描输出路径</label>
+            <span class="path-hint">留空时使用应用默认目录</span>
+          </div>
+          <div class="path-controls">
+            <input
+              id="chinese-list-path"
+              v-model="txtFilePath"
+              type="text"
+              class="path-input"
+              placeholder="留空则使用默认路径"
+              @blur="savePathSetting"
+            />
+            <button class="btn-secondary btn-small" @click="selectPath">
+              选择文件夹
+            </button>
+            <button
+              v-if="txtFilePath"
+              class="btn-quiet btn-small"
+              @click="clearPathSetting"
+            >
+              恢复默认
+            </button>
+          </div>
         </div>
         <button
           class="btn-secondary"
@@ -118,22 +146,28 @@
     </div>
 
     <!-- 统计信息 -->
-    <div class="stats-section card">
-      <h3 class="section-title">汇总统计</h3>
+    <div class="stats-section card workbench-card">
+      <div class="section-heading">
+        <div>
+          <p class="section-kicker">OVERVIEW</p>
+          <h2 class="section-title">汇总统计</h2>
+        </div>
+        <span class="section-note">实时去重计数</span>
+      </div>
       <div class="stats-grid">
-        <div class="stat-item">
+        <div class="stat-item stat-source">
           <span class="stat-value">{{ txtRJCount }}</span>
           <span class="stat-label">TXT</span>
         </div>
-        <div class="stat-item">
+        <div class="stat-item stat-source">
           <span class="stat-value">{{ tgRJCount }}</span>
           <span class="stat-label">TG</span>
         </div>
-        <div class="stat-item">
+        <div class="stat-item stat-source">
           <span class="stat-value">{{ apiRJCount }}</span>
           <span class="stat-label">API</span>
         </div>
-        <div class="stat-item highlight">
+        <div class="stat-item highlight stat-total">
           <span class="stat-value">{{ totalUniqueCount }}</span>
           <span class="stat-label">去重后总计</span>
         </div>
@@ -144,21 +178,27 @@
     </div>
 
     <!-- 操作按钮 -->
-    <div class="actions-section">
-      <button
-        class="btn-primary btn-large"
-        :disabled="totalUniqueCount === 0"
-        @click="exportList"
-      >
-        导出RJ/VJ/BJ列表.txt
-      </button>
-      <button class="btn-secondary" @click="clearAll">清除所有数据</button>
+    <div class="actions-section" aria-label="列表操作">
+      <div class="action-copy">
+        <strong>准备好导出了吗？</strong>
+        <span>导出当前去重后的 {{ totalUniqueCount }} 个编号；清空会移除所有来源数据。</span>
+      </div>
+      <div class="action-buttons">
+        <button
+          class="btn-primary btn-large"
+          :disabled="totalUniqueCount === 0"
+          @click="exportList"
+        >
+          导出 RJ / VJ / BJ 列表
+        </button>
+        <button class="btn-danger" @click="clearAll">清除所有数据（{{ totalUniqueCount }} 个）</button>
+      </div>
     </div>
 
     <!-- 使用说明弹窗 -->
-    <div v-if="showHelp" class="modal-overlay" @click.self="showHelp = false">
-      <div class="modal-content">
-        <h3>汉化列表使用说明</h3>
+    <div v-if="showHelp" class="modal-overlay" role="presentation" @click.self="closeHelp" @keydown.esc="closeHelp">
+      <div ref="helpDialogRef" class="modal-content" role="dialog" aria-modal="true" aria-labelledby="chinese-help-title" tabindex="-1">
+        <h3 id="chinese-help-title">汉化列表使用说明</h3>
         <div class="help-content">
           <h4>功能说明</h4>
           <p>本工具用于收集和管理所有汉化过的ASMR作品的RJ/VJ/BJ号。</p>
@@ -192,14 +232,22 @@
             <li>包含非日语语言版本（简体中文/繁体中文/韩语/英语）</li>
           </ul>
         </div>
-        <button class="btn-primary" @click="showHelp = false">知道了</button>
+        <button class="btn-primary" @click="closeHelp">知道了</button>
       </div>
     </div>
   </div>
 </template>
 
 <script setup>
+import { nextTick, ref, watch } from "vue";
+import { createDialog, createMessage } from "../../utils/ui-feedback";
 import { useChineseListWorkflow } from "../../composables/useChineseListWorkflow";
+
+const txtFileInput = ref(null);
+const helpDialogRef = ref(null);
+const helpTriggerRef = ref(null);
+const dialog = createDialog();
+const message = createMessage();
 
 const {
   txtRJCount,
@@ -223,6 +271,20 @@ const {
   selectPath,
   savePathSetting,
   clearPathSetting,
-} = useChineseListWorkflow();
+} = useChineseListWorkflow({ dialog, message });
+
+const closeHelp = () => {
+  showHelp.value = false;
+};
+
+watch(showHelp, async (visible) => {
+  if (visible) {
+    await nextTick();
+    helpDialogRef.value?.focus();
+  } else {
+    await nextTick();
+    helpTriggerRef.value?.focus();
+  }
+});
 </script>
 <style scoped src="./ChineseListPageContentCore.css"></style>

@@ -8,10 +8,7 @@
  */
 
 import TelegramBot from "node-telegram-bot-api";
-import { TelegramClient } from "telegram";
-import { StringSession } from "telegram/sessions";
-import { createSilentGramJsLogger } from "../utils/gramjs-logger";
-import { ipcMain, app } from "electron";
+import { app } from "electron";
 import fs from "fs/promises";
 import path from "path";
 import { getConfig, getDataDir } from "./config";
@@ -46,12 +43,13 @@ import {
 } from "./tg-search-bot-core/response-messages";
 import {
   createEmptyPresetIndexStats,
-  getHistoryEntryAlternateUrls,
   getHistoryEntryUrl,
 } from "./tg-search-bot-core/history-utils";
 import { normalizePeerEntityInput } from "./tg-common-core/peer-entity";
 import { getTelegramMessageText } from "./tg-common-core/message-text";
 import { normalizeMessageIdFromPayload } from "./tg-common-core/id-normalizers";
+import { CONFIG_DEFAULTS } from "../../shared/config-contract.mjs";
+import { getAsmrToken } from "../domains/asmr/credential-store.js";
 import {
   extractWorksArrayBasic,
   getAsmrSearchBrowserHeaders,
@@ -105,14 +103,20 @@ let botStartTimestamp = 0;
 let runningMode = "polling";
 let currentBotUsername = "";
 
-let telegramClient = null;
-let telegramClientConnected = false;
-
 let historyPath = "";
 let historyCache = {
   updatedAt: new Date().toISOString(),
+  sync: {
+    cursorMessageId: null,
+    scanCheckpointOffsetId: null,
+    initialSyncComplete: false,
+    processedMessageIds: [],
+    lastSyncAt: null,
+  },
   history: {},
 };
+let historySyncPromise = null;
+const HISTORY_PROCESSED_MESSAGE_LIMIT = 50000;
 
 let startupSyncTask = null;
 const PRESET_INDEX_CACHE_TTL_MS = 5000;
@@ -125,8 +129,10 @@ const ONE_QUEUE_ADD_WORKS_API =
   "https://api.asmr-200.com/api/playlist/add-works-to-playlist";
 const QUEUE_CHECK_MAX_PAGES = 200;
 const SEARCH_COMMAND_TIMEOUT_MS = 45000;
-const DEFAULT_TRANSLATION_QUEUE_CACHE_REFRESH_MS = 5 * 60 * 1000;
-const DEFAULT_SEARCH_RETRY_DELAY_MS = 60 * 1000;
+const SEARCH_INDEX_FRESHNESS_WINDOW_MS = 5 * 60 * 1000;
+const DEFAULT_TRANSLATION_QUEUE_CACHE_REFRESH_MS =
+  CONFIG_DEFAULTS.tg.translationQueueCacheRefreshMs;
+const DEFAULT_SEARCH_RETRY_DELAY_MS = CONFIG_DEFAULTS.tg.searchRetryDelayMs;
 const SEARCH_PIPELINE_STAGE = {
   history: "历史索引",
   preset: "前置包",
@@ -236,9 +242,8 @@ function markAndCheckInfoReplyDedupe(chatId, replyToMessageId, workCode) {
 
 function getBotRuntimeConfig(config = getConfig()) {
   const tgConfig = config?.tg || {};
-  const legacyBotConfig = tgConfig.bot || {};
 
-  const botToken = tgConfig.botToken || legacyBotConfig.token || "";
+  const botToken = tgConfig.botToken || "";
   const sourceChannelRaw =
     tgConfig.searchChannelId || tgConfig.channel || tgConfig.discussion || "";
   const sourceChannelCandidates = normalizeIdList(
@@ -258,35 +263,20 @@ function getBotRuntimeConfig(config = getConfig()) {
 
   const prePackageLink = tgConfig.prePackageLink || "";
 
-  const allowedUsers = normalizeIdList(
-    tgConfig.botAllowedUsers || legacyBotConfig.allowedUsers,
-  );
-  const allowedChats = normalizeIdList(
-    tgConfig.botAllowedChats || legacyBotConfig.allowedGroups,
-  );
+  const allowedUsers = normalizeIdList(tgConfig.botAllowedUsers);
+  const allowedChats = normalizeIdList(tgConfig.botAllowedChats);
 
-  const mode = (
-    tgConfig.botMode ||
-    legacyBotConfig.mode ||
-    "polling"
-  ).toLowerCase();
-  const webhookUrl = tgConfig.botWebhookUrl || legacyBotConfig.webhookUrl || "";
-  const webhookPort = Number(
-    tgConfig.botWebhookPort || legacyBotConfig.webhookPort || 8443,
-  );
-  const searchLimit = parseSearchLimit(
-    tgConfig.botSearchLimit ?? legacyBotConfig.searchLimit,
-    3000,
-  );
+  const mode = (tgConfig.botMode || "polling").toLowerCase();
+  const webhookUrl = tgConfig.botWebhookUrl || "";
+  const webhookPort = Number(tgConfig.botWebhookPort || 8443);
+  const searchLimit = parseSearchLimit(tgConfig.botSearchLimit, 3000);
   const syncSearchCacheOnUpload = toSafeBoolean(
     tgConfig.botSyncSearchCacheOnUpload,
     true,
   );
   const whitelistDebugLog = toSafeBoolean(tgConfig.botWhitelistDebugLog, false);
   const configuredHistoryPath =
-    tgConfig.botHistoryPath ||
-    legacyBotConfig.historyPath ||
-    path.join(getDataDir(), "tg-bot-history.json");
+    tgConfig.botHistoryPath || path.join(getDataDir(), "tg-bot-history.json");
   const translationQueueCacheRefreshMs = Number(
     tgConfig.translationQueueCacheRefreshMs,
   );
@@ -332,7 +322,7 @@ function getBotRuntimeConfig(config = getConfig()) {
 function getTranslationQueueRuntimeConfig(config = getConfig()) {
   const asmrConfig = config?.asmr || {};
 
-  const token = String(asmrConfig.token || "").trim();
+  const token = String(getAsmrToken() || asmrConfig.token || "").trim();
   const configuredPlaylistId = String(
     asmrConfig.translationQueuePlaylistId ||
       asmrConfig.pendingTranslationQueuePlaylistId ||
@@ -708,6 +698,14 @@ async function processPendingSearchRetries() {
         );
 
         if (!result.success && result.retryable !== true) {
+          if (result.status === "fail") {
+            const retryError = new Error(result.message || "搜索未成功");
+            retryError.code = result.failureCode || "search_failed";
+            retryError.stage = result.failureStage || result.stage;
+            retryError.retryable = true;
+            throw retryError;
+          }
+
           const responseText = `❌ ${task.workCode} 自动重试结果：${
             result.message || "未找到可用结果"
           }`;
@@ -732,7 +730,11 @@ async function processPendingSearchRetries() {
         }
 
         if (!result.success) {
-          throw new Error(result.message || "搜索未成功");
+          const retryError = new Error(result.message || "搜索未成功");
+          retryError.code = result.failureCode || "search_failed";
+          retryError.stage = result.failureStage || result.stage;
+          retryError.retryable = result.retryable === true;
+          throw retryError;
         }
 
         const responseText = `✅ ${task.workCode} 自动重试成功：${result.message}${
@@ -766,9 +768,13 @@ async function processPendingSearchRetries() {
             attempt: nextAttempt,
             retryAt: Date.now() + runtimeConfig.searchRetryDelayMs,
             lastError: getNormalizedErrorMessage(error),
+            lastFailureCode: String(
+              error?.code || "transient_upstream_failure",
+            ),
+            lastFailureStage: String(error?.stage || "search"),
           });
           logger.warn(
-            `[tg-search-bot] 搜索重试失败，继续保留错误池 code=${task.workCode} chat=${task.chatId} attempt=${nextAttempt}${
+            `[tg-search-bot] 搜索重试失败，继续保留错误池 code=${task.workCode} chat=${task.chatId} stage=${error?.stage || "search"} failure=${error?.code || "transient_upstream_failure"} attempt=${nextAttempt}${
               hasAttemptLimit
                 ? `/${runtimeConfig.searchRetryMaxAttempts}`
                 : "/unlimited"
@@ -1625,7 +1631,15 @@ async function ensureHistoryLoaded(runtimeConfig) {
     }
 
     historyCache = {
-      updatedAt: new Date().toISOString(),
+      updatedAt: "",
+      freshness: "unknown",
+      sync: {
+        cursorMessageId: null,
+        scanCheckpointOffsetId: null,
+        initialSyncComplete: false,
+        processedMessageIds: [],
+        lastSyncAt: null,
+      },
       history: {},
     };
   }
@@ -1786,7 +1800,6 @@ export async function syncSearchHistoryFromUploadRecords(payload = {}) {
     for (const code of codes) {
       upsertHistory(code, {
         url: linkSet.primaryUrl,
-        alternateUrls: linkSet.alternateUrls,
         source: "upload_event",
         messageId,
       });
@@ -1816,51 +1829,11 @@ export async function syncSearchHistoryFromUploadRecords(payload = {}) {
   };
 }
 
-function dedupeUrls(urls) {
-  return [...new Set(urls.filter(Boolean))];
-}
-
 function getHistoryHit(rjCode, sourceChannelId = "") {
   const hit = historyCache.history?.[rjCode];
   if (!hit) return null;
 
-  if (typeof hit === "string") {
-    const legacyMessageId = normalizeMessageIdFromPayload(
-      String(hit).match(/\/(\d+)(?:[/?#].*)?$/)?.[1],
-    );
-
-    if (legacyMessageId !== null) {
-      const rebuiltLinkSet = buildMessageLinksByEntity(
-        null,
-        sourceChannelId,
-        legacyMessageId,
-      );
-      if (rebuiltLinkSet.primaryUrl) {
-        const mergedUrls = dedupeUrls([
-          rebuiltLinkSet.primaryUrl,
-          ...rebuiltLinkSet.alternateUrls,
-          hit,
-        ]);
-        return {
-          url: mergedUrls[0] || null,
-          alternateUrls: mergedUrls.slice(1),
-          source: "history",
-          updatedAt: "",
-        };
-      }
-    }
-
-    return {
-      url: hit,
-      alternateUrls: [],
-      source: "history",
-      updatedAt: "",
-    };
-  }
-
   const messageId = normalizeMessageIdFromPayload(hit?.messageId);
-  const baseAlternateUrls = getHistoryEntryAlternateUrls(hit);
-
   if (messageId !== null) {
     const rebuiltLinkSet = buildMessageLinksByEntity(
       null,
@@ -1869,16 +1842,8 @@ function getHistoryHit(rjCode, sourceChannelId = "") {
     );
 
     if (rebuiltLinkSet.primaryUrl) {
-      const mergedUrls = dedupeUrls([
-        rebuiltLinkSet.primaryUrl,
-        ...rebuiltLinkSet.alternateUrls,
-        hit.url,
-        ...baseAlternateUrls,
-      ]);
-
       return {
-        url: mergedUrls[0] || null,
-        alternateUrls: mergedUrls.slice(1),
+        url: rebuiltLinkSet.primaryUrl || hit.url || null,
         source: hit.source || "history",
         updatedAt: hit.updatedAt || "",
       };
@@ -1887,7 +1852,6 @@ function getHistoryHit(rjCode, sourceChannelId = "") {
 
   return {
     url: hit.url,
-    alternateUrls: baseAlternateUrls,
     source: hit.source || "history",
     updatedAt: hit.updatedAt || "",
   };
@@ -1899,35 +1863,16 @@ function hasUserApiCredentials(config = getConfig()) {
 }
 
 async function getConnectedClient() {
-  const config = getConfig();
-  const tgConfig = config.tg || {};
-  const { apiId, apiHash, session } = tgConfig;
-
-  if (!apiId || !apiHash || !session) {
+  if (!hasUserApiCredentials()) {
     throw new Error(
       "频道实时检索需要配置 apiId/apiHash/session（用于读取频道历史）。",
     );
   }
 
-  if (!telegramClient || !telegramClientConnected) {
-    telegramClient = new TelegramClient(
-      new StringSession(session),
-      Number(apiId),
-      apiHash,
-      {
-        connectionRetries: 2,
-        useWSS: false,
-        baseLogger: createSilentGramJsLogger(),
-      },
-    );
-
-    telegramClient.setLogLevel("none");
-    await telegramClient.connect();
-    telegramClientConnected = true;
-    logger.debug("[tg-search-bot] Telegram User API 客户端已连接");
-  }
-
-  return telegramClient;
+  const { requireConnectedTelegramClient } = await import(
+    "../utils/telegram-login"
+  );
+  return requireConnectedTelegramClient();
 }
 
 async function resolveEntity(client, channelIdInput) {
@@ -2113,6 +2058,16 @@ async function buildPresetIndexEntries(runtimeConfig, options = {}) {
 }
 
 export async function syncChannelHistoryToIndex(options = {}) {
+  if (historySyncPromise) {
+    return historySyncPromise;
+  }
+  historySyncPromise = syncChannelHistoryToIndexInternal(options).finally(() => {
+    historySyncPromise = null;
+  });
+  return historySyncPromise;
+}
+
+async function syncChannelHistoryToIndexInternal(options = {}) {
   const runtimeConfig = getBotRuntimeConfig(getConfig());
 
   if (!runtimeConfig.sourceChannelId) {
@@ -2133,8 +2088,22 @@ export async function syncChannelHistoryToIndex(options = {}) {
     const entity = await resolveEntity(client, runtimeConfig.sourceChannelId);
     const preferredLinkChannelId = getPreferredLinkChannelId(runtimeConfig);
 
+    const resume = options.resume !== false;
+    const cursorMessageId = resume
+      ? Number(historyCache.sync?.cursorMessageId) || 0
+      : 0;
+    const needsInitialBackfill =
+      resume && historyCache.sync?.initialSyncComplete !== true;
+    const scanCheckpointOffsetId = resume
+      ? Number(historyCache.sync?.scanCheckpointOffsetId) || 0
+      : 0;
     const iterator = client.iterMessages(entity, {
       limit: scanLimit,
+      ...(!needsInitialBackfill && cursorMessageId > 0
+        ? { minId: cursorMessageId }
+        : scanCheckpointOffsetId > 0
+          ? { offsetId: scanCheckpointOffsetId }
+          : {}),
     });
 
     let scannedMessages = 0;
@@ -2145,6 +2114,13 @@ export async function syncChannelHistoryToIndex(options = {}) {
     let presetAdded = 0;
     let presetUpdated = 0;
     let presetSkippedExisting = 0;
+    let maxMessageId = cursorMessageId;
+    let lastScannedMessageId = scanCheckpointOffsetId;
+    const processedMessageIds = new Set(
+      Array.isArray(historyCache.sync?.processedMessageIds)
+        ? historyCache.sync.processedMessageIds.map(String)
+        : [],
+    );
 
     for await (const msg of iterator) {
       if (!msg) continue;
@@ -2152,6 +2128,23 @@ export async function syncChannelHistoryToIndex(options = {}) {
       if (messageId === null) continue;
 
       scannedMessages += 1;
+      maxMessageId = Math.max(maxMessageId, messageId);
+      lastScannedMessageId = messageId;
+      const messageKey = String(messageId);
+      if (processedMessageIds.has(messageKey)) {
+        if (scannedMessages % 100 === 0) {
+          historyCache.sync = {
+            ...(historyCache.sync || {}),
+            scanCheckpointOffsetId: lastScannedMessageId,
+            processedMessageIds: [...processedMessageIds].slice(
+              -HISTORY_PROCESSED_MESSAGE_LIMIT,
+            ),
+          };
+          await persistHistory();
+        }
+        continue;
+      }
+      processedMessageIds.add(messageKey);
 
       const text = getTelegramMessageText(msg);
       const rjCodes = extractRJCodes(text);
@@ -2182,12 +2175,40 @@ export async function syncChannelHistoryToIndex(options = {}) {
 
         upsertHistory(code, {
           url,
-          alternateUrls: linkSet.alternateUrls,
           source: "channel_sync",
           messageId,
         });
       }
+
+      if (scannedMessages % 100 === 0) {
+        historyCache.sync = {
+          ...(historyCache.sync || {}),
+          scanCheckpointOffsetId:
+            cursorMessageId > 0 ? null : lastScannedMessageId,
+          processedMessageIds: [...processedMessageIds].slice(
+            -HISTORY_PROCESSED_MESSAGE_LIMIT,
+          ),
+        };
+        await persistHistory();
+      }
     }
+
+    const initialSyncComplete =
+      !needsInitialBackfill || scannedMessages < scanLimit;
+    historyCache.sync = {
+      cursorMessageId: initialSyncComplete
+        ? Math.max(cursorMessageId, maxMessageId) || null
+        : cursorMessageId || null,
+      scanCheckpointOffsetId: initialSyncComplete
+        ? null
+        : lastScannedMessageId || scanCheckpointOffsetId || null,
+      initialSyncComplete,
+      processedMessageIds: [...processedMessageIds].slice(
+        -HISTORY_PROCESSED_MESSAGE_LIMIT,
+      ),
+      lastSyncAt: new Date().toISOString(),
+    };
+    await persistHistory();
 
     const presetIndex = await buildPresetIndexEntries(runtimeConfig, {
       forceReload: true,
@@ -2196,10 +2217,7 @@ export async function syncChannelHistoryToIndex(options = {}) {
     for (const [code, presetPayload] of Object.entries(presetIndex.entries)) {
       const existingEntry = historyCache.history?.[code];
       const existingUrl = getHistoryEntryUrl(existingEntry);
-      const existingSource =
-        typeof existingEntry === "string"
-          ? "legacy"
-          : String(existingEntry?.source || "");
+      const existingSource = String(existingEntry?.source || "");
 
       const fromChannelSource =
         existingSource === "channel" || existingSource.startsWith("channel_");
@@ -2256,11 +2274,20 @@ export async function syncChannelHistoryToIndex(options = {}) {
         presetSkippedNoUrl: presetIndex.stats.presetSkippedNoUrl,
         totalIndexed,
         scanLimit,
+        cursorMessageId: historyCache.sync.cursorMessageId,
+        processedMessageIds: historyCache.sync.processedMessageIds.length,
+        resumedFrom: needsInitialBackfill
+          ? scanCheckpointOffsetId || null
+          : cursorMessageId || null,
+        initialSyncComplete: historyCache.sync.initialSyncComplete,
       },
       historyFilePath: runtimeConfig.historyFilePath,
       sourceChannelId: runtimeConfig.sourceChannelId,
     };
   } catch (error) {
+    if (historyCache.sync) {
+      await persistHistory();
+    }
     const normalizedError = normalizeError(error);
     logger.error("[tg-search-bot] 索引同步失败", normalizedError.message);
 
@@ -2379,7 +2406,7 @@ function logIncomingRequest(msg, runtimeConfig, commandName) {
   return permission;
 }
 
-export async function handleSearchRequest(rawInput, options = {}) {
+async function executeSearchRequest(rawInput, options = {}) {
   const rjCode = normalizeWorkCodeInput(rawInput);
   if (!rjCode) {
     return {
@@ -2418,7 +2445,6 @@ export async function handleSearchRequest(rawInput, options = {}) {
     return {
       success: true,
       url: historyHit.url,
-      alternateUrls: [],
       message: `找到 ${rjCode}（历史上传）`,
       source: historyHit.source,
     };
@@ -2449,7 +2475,6 @@ export async function handleSearchRequest(rawInput, options = {}) {
     return {
       success: true,
       url: presetResult.url,
-      alternateUrls: [],
       message: buildPresetFoundMessage(rjCode, presetResult),
       source: presetResult.source,
     };
@@ -2483,6 +2508,7 @@ export async function handleSearchRequest(rawInput, options = {}) {
       return {
         success: false,
         retryable: oneSearchResult.retryable === true,
+        failureStage: "one",
         message: oneSearchResult.retryable
           ? `One站检索暂时失败：${oneSearchResult.error || "网络错误"}`
           : oneSearchResult.error || `One站未找到 ${rjCode}`,
@@ -2530,11 +2556,6 @@ export async function handleSearchRequest(rawInput, options = {}) {
       return {
         success: true,
         url: subtitleTarget.workUrl,
-        alternateUrls:
-          oneSearchResult.workUrl &&
-          oneSearchResult.workUrl !== subtitleTarget.workUrl
-            ? [oneSearchResult.workUrl]
-            : [],
         message: subtitleHitMessage,
         source: "one_subtitle",
       };
@@ -2566,7 +2587,6 @@ export async function handleSearchRequest(rawInput, options = {}) {
       return {
         success: true,
         url: queueUrl || oneSearchResult.workUrl,
-        alternateUrls: oneSearchResult.workUrl ? [oneSearchResult.workUrl] : [],
         message: `本地未找到 ${rjCode}，该作品已在待翻译队列，无需重复入队`,
         source: "one_queue_cache",
       };
@@ -2603,7 +2623,6 @@ export async function handleSearchRequest(rawInput, options = {}) {
       return {
         success: true,
         url: oneQueueContext.queueUrl || oneQueueContext.workUrl,
-        alternateUrls: oneQueueContext.workUrl ? [oneQueueContext.workUrl] : [],
         message: `本地未找到 ${rjCode}，已转入待翻译队列${buildQueueMessageSuffix(oneQueueContext)}`,
         source: "one_queue_masked",
       };
@@ -2631,6 +2650,7 @@ export async function handleSearchRequest(rawInput, options = {}) {
       return {
         success: false,
         retryable: queueResult.retryable === true,
+        failureStage: "queue",
         message: `${rjCode} 在 One 站已找到，但加入待翻译队列失败：${queueResult.error}`,
       };
     }
@@ -2665,7 +2685,6 @@ export async function handleSearchRequest(rawInput, options = {}) {
     return {
       success: true,
       url: oneQueueContext.queueUrl || oneQueueContext.workUrl,
-      alternateUrls: oneQueueContext.workUrl ? [oneQueueContext.workUrl] : [],
       message: `本地未找到 ${rjCode}，已转入待翻译队列${buildQueueMessageSuffix(oneQueueContext)}`,
       source: "one_queue",
     };
@@ -2688,6 +2707,161 @@ export async function handleSearchRequest(rawInput, options = {}) {
   return {
     success: false,
     message: buildNotFoundMessage(rjCode),
+  };
+}
+
+/**
+ * Attach the B5 result contract without changing search order or user-facing
+ * messages. Consumers can use status/stage/pipeline to distinguish a miss,
+ * transient failure and a queued result, while the existing fields remain
+ * compatible with the Bot command handlers.
+ */
+function enrichSearchResult(result, workCode, options = {}) {
+  const source = String(result?.source || "");
+  let status = result?.success ? "hit" : "miss";
+  let stage =
+    result?.failureStage ||
+    (source.startsWith("one_queue") ? "queue" : "history");
+  let historyWasHit = false;
+  let presetWasHit = false;
+  let oneWasHit = false;
+  const oneSearchEnabled = options.enableOneQueue === true;
+
+  if (source === "preset_sync" || source === "preset_cache") {
+    stage = "preset";
+    presetWasHit = true;
+  } else if (
+    source === "history" ||
+    source === "upload_event" ||
+    source === "channel_sync"
+  ) {
+    historyWasHit = true;
+  } else if (source === "one_subtitle") {
+    stage = "one";
+    oneWasHit = true;
+  } else if (source.startsWith("one_queue")) {
+    status = source === "one_queue_masked" ? "hit" : "queued";
+    stage = "queue";
+    oneWasHit = true;
+  } else if (result?.failureStage === "queue") {
+    status = "fail";
+    stage = "queue";
+    oneWasHit = true;
+  } else if (!result?.success && result?.retryable === true) {
+    status = "fail";
+    stage = result.failureStage || "one";
+  } else if (!result?.success) {
+    stage = oneSearchEnabled ? "one" : "preset";
+  }
+
+  const {
+    updatedAt: historyUpdatedAt,
+    ageMs: indexAgeMs,
+    freshness,
+  } = getSearchIndexFreshness();
+
+  const pipeline = [
+    {
+      stage: "history",
+      status: stage === "validation" ? "skip" : historyWasHit ? "hit" : "miss",
+    },
+    {
+      stage: "preset",
+      status:
+        stage === "validation"
+          ? "skip"
+          : presetWasHit
+            ? "hit"
+            : historyWasHit
+              ? "skip"
+              : "miss",
+    },
+    { stage: "channel", status: "skip" },
+    {
+      stage: "one",
+      status: oneWasHit
+        ? "hit"
+        : stage === "one" && oneSearchEnabled
+          ? status === "fail"
+            ? "fail"
+            : "miss"
+          : "skip",
+    },
+    {
+      stage: "queue",
+      status:
+        stage !== "queue"
+          ? "skip"
+          : source === "one_queue_masked"
+            ? "skip"
+            : status === "queued"
+              ? "hit"
+              : "fail",
+    },
+  ];
+
+  const failureCode =
+    result?.failureCode ||
+    (result?.failureStage === "queue"
+      ? result.retryable === true
+        ? "queue_upstream_failure"
+        : "queue_rejected"
+      : result?.retryable === true
+        ? "transient_upstream_failure"
+        : status === "miss" && oneSearchEnabled
+          ? "not_found"
+          : null);
+
+  return {
+    ...result,
+    workCode,
+    status,
+    stage,
+    freshness,
+    indexUpdatedAt: historyUpdatedAt || null,
+    indexAgeMs,
+    failureCode,
+    pipeline,
+  };
+}
+
+export async function handleSearchRequest(rawInput, options = {}) {
+  const workCode = normalizeWorkCodeInput(rawInput);
+  if (!workCode) {
+    return enrichSearchResult(
+      {
+        success: false,
+        status: "miss",
+        failureStage: "validation",
+        failureCode: "invalid_code",
+        message: "无效的编号格式，请使用 RJ/VJ/BJ + 数字（如 RJ123456）",
+      },
+      "",
+    );
+  }
+
+  const result = await executeSearchRequest(workCode, options);
+  return enrichSearchResult(result, workCode, options);
+}
+
+function getSearchIndexFreshness() {
+  const updatedAt = String(historyCache?.updatedAt || "");
+  const timestamp = Date.parse(updatedAt);
+  const indexedCount = Object.keys(historyCache?.history || {}).length;
+  const ageMs = Number.isFinite(timestamp)
+    ? Math.max(0, Date.now() - timestamp)
+    : null;
+
+  return {
+    indexedCount,
+    updatedAt: updatedAt || null,
+    ageMs,
+    freshness:
+      indexedCount === 0
+        ? "unknown"
+        : ageMs === null || ageMs > SEARCH_INDEX_FRESHNESS_WINDOW_MS
+          ? "stale"
+          : "fresh",
   };
 }
 
@@ -3799,7 +3973,6 @@ async function handleChannelPost(msg) {
     for (const code of rjCodes) {
       upsertHistory(code, {
         url: linkSet.primaryUrl,
-        alternateUrls: linkSet.alternateUrls,
         source: "channel_post",
         messageId,
       });
@@ -4148,12 +4321,6 @@ export async function stopBot() {
     stopSearchRetryScheduler();
     stopDailyZipScheduler();
 
-    if (telegramClient && telegramClientConnected) {
-      await telegramClient.disconnect();
-      telegramClientConnected = false;
-      telegramClient = null;
-    }
-
     logger.info("[tg-search-bot] Bot 停止成功");
     return { success: true, message: "Bot 停止成功" };
   } catch (error) {
@@ -4171,79 +4338,67 @@ export function getBotStatus() {
     connected: botRunning && !!bot,
     mode: runningMode,
     indexedCount: Object.keys(historyCache.history || {}).length,
+    indexUpdatedAt: historyCache.updatedAt || null,
+    indexAgeMs: Number.isFinite(Date.parse(historyCache.updatedAt))
+      ? Math.max(0, Date.now() - Date.parse(historyCache.updatedAt))
+      : null,
+    freshness: getSearchIndexFreshness().freshness,
+    historySync: {
+      cursorMessageId: historyCache.sync?.cursorMessageId || null,
+      scanCheckpointOffsetId: historyCache.sync?.scanCheckpointOffsetId || null,
+      initialSyncComplete: historyCache.sync?.initialSyncComplete === true,
+      processedMessageIds: Array.isArray(historyCache.sync?.processedMessageIds)
+        ? historyCache.sync.processedMessageIds.length
+        : 0,
+      lastSyncAt: historyCache.sync?.lastSyncAt || null,
+    },
     historyFilePath: runtimeConfig.historyFilePath,
     sourceChannelId: runtimeConfig.sourceChannelId,
   };
 }
 
-export function setupTgSearchBotIPC() {
-  logger.debug("[tg-search-bot] 正在初始化 IPC 处理器...");
+// IPC semantics live with the domain implementation; the adapter only wires
+// these functions to the shared sender-validation registry.
+export async function handleSearchRequestForIpc(rawInput) {
+  logger.debug(`[tg-search-bot] IPC 搜索请求: ${rawInput}`);
+  return await withOperationTimeout(
+    handleSearchRequest(rawInput),
+    SEARCH_COMMAND_TIMEOUT_MS,
+    `搜索 ${normalizeWorkCodeInput(rawInput) || rawInput || "请求"}`,
+  );
+}
 
-  const handlers = [
-    "tg-bot-search",
-    "tg-bot-info",
-    "tg-bot-start",
-    "tg-bot-stop",
-    "tg-bot-status",
-    "tg-bot-sync-history",
-    "tg-bot-generate-daily-zip",
-  ];
+export async function handleInfoRequestForIpc(code) {
+  logger.debug(`[tg-search-bot] IPC 信息查询请求: ${code}`);
+  return await handleInfoRequest(code);
+}
 
-  for (const handler of handlers) {
-    try {
-      ipcMain.removeHandler(handler);
-    } catch (error) {
-      const normalizedError = normalizeError(error);
-      logger.warn(
-        `[tg-search-bot] removeHandler(${handler}) 失败`,
-        normalizedError.message,
-      );
-    }
-  }
+export async function startBotForIpc() {
+  logger.debug("[tg-search-bot] IPC 启动 Bot 请求");
+  return await startBot();
+}
 
-  ipcMain.handle("tg-bot-search", async (_event, rjCode) => {
-    logger.debug(`[tg-search-bot] IPC 搜索请求: ${rjCode}`);
-    return await withOperationTimeout(
-      handleSearchRequest(rjCode),
-      SEARCH_COMMAND_TIMEOUT_MS,
-      `搜索 ${normalizeWorkCodeInput(rjCode) || rjCode || "请求"}`,
-    );
-  });
+export async function stopBotForIpc() {
+  logger.debug("[tg-search-bot] IPC 停止 Bot 请求");
+  return await stopBot();
+}
 
-  ipcMain.handle("tg-bot-info", async (_event, code) => {
-    logger.debug(`[tg-search-bot] IPC 信息查询请求: ${code}`);
-    return await handleInfoRequest(code);
-  });
+export function getBotStatusForIpc() {
+  return getBotStatus();
+}
 
-  ipcMain.handle("tg-bot-start", async () => {
-    logger.debug("[tg-search-bot] IPC 启动 Bot 请求");
-    return await startBot();
-  });
+export async function syncChannelHistoryForIpc(options = {}) {
+  const requestedLimit = parseSearchLimit(options?.limit, 0);
+  const runtimeConfig = getBotRuntimeConfig(getConfig());
+  const effectiveLimit =
+    requestedLimit > 0
+      ? requestedLimit
+      : parseSearchLimit(runtimeConfig.searchLimit, 3000);
+  logger.debug(`[tg-search-bot] IPC 索引同步请求 limit=${effectiveLimit}`);
+  return await syncChannelHistoryToIndex(options);
+}
 
-  ipcMain.handle("tg-bot-stop", async () => {
-    logger.debug("[tg-search-bot] IPC 停止 Bot 请求");
-    return await stopBot();
-  });
-
-  ipcMain.handle("tg-bot-status", () => {
-    return getBotStatus();
-  });
-
-  ipcMain.handle("tg-bot-sync-history", async (_event, options = {}) => {
-    const requestedLimit = parseSearchLimit(options?.limit, 0);
-    const runtimeConfig = getBotRuntimeConfig(getConfig());
-    const effectiveLimit =
-      requestedLimit > 0
-        ? requestedLimit
-        : parseSearchLimit(runtimeConfig.searchLimit, 3000);
-    logger.debug(`[tg-search-bot] IPC 索引同步请求 limit=${effectiveLimit}`);
-    return await syncChannelHistoryToIndex(options);
-  });
-
-  ipcMain.handle("tg-bot-generate-daily-zip", async () => {
-    logger.info("[tg-search-bot] IPC 强制生成每日 ZIP 请求");
-    return await generateDailyZip({ force: true });
-  });
-
-  logger.debug("[tg-search-bot] 所有 IPC 处理器注册完成");
+export async function generateDailyZipForIpc() {
+  logger.info("[tg-search-bot] IPC 强制生成每日 ZIP 请求");
+  return await generateDailyZip({ force: true });
 }

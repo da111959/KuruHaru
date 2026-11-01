@@ -1,4 +1,4 @@
-import { ref, reactive } from "vue";
+import { ref, reactive, nextTick } from "vue";
 
 export const useSettingsUiState = () => {
   const isTgLogging = ref(false);
@@ -10,7 +10,10 @@ export const useSettingsUiState = () => {
 
   const tgAuthCode = ref("");
   const tgAuthType = ref("Code");
+  const tgAuthDelivery = ref("");
   const showTgAuthModal = ref(false);
+  const authCodeInput = ref(null);
+  let authReturnFocus = null;
 
   const expandedPanels = reactive({
     accountStatus: true,
@@ -23,6 +26,16 @@ export const useSettingsUiState = () => {
     expandedPanels[panel] = !expandedPanels[panel];
   };
 
+  const focusAuthInput = async () => {
+    authReturnFocus = document.activeElement;
+    await nextTick();
+    authCodeInput.value?.focus?.();
+  };
+
+  const restoreAuthFocus = () => {
+    nextTick(() => authReturnFocus?.focus?.());
+  };
+
   return {
     isTgLogging,
     isAsmrLogging,
@@ -31,7 +44,11 @@ export const useSettingsUiState = () => {
     showAsmrPassword,
     tgAuthCode,
     tgAuthType,
+    tgAuthDelivery,
     showTgAuthModal,
+    authCodeInput,
+    focusAuthInput,
+    restoreAuthFocus,
     expandedPanels,
     togglePanel,
   };

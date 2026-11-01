@@ -1,6 +1,6 @@
 import { ref, watch, onMounted } from "vue";
 
-export const usePresetManagerWorkflow = ({ props, emit }) => {
+export const usePresetManagerWorkflow = ({ props, emit, dialog }) => {
   const presetName = ref("");
   const presets = ref([]);
   const activePresets = ref([]);
@@ -120,7 +120,7 @@ export const usePresetManagerWorkflow = ({ props, emit }) => {
     };
   };
 
-  const savePreset = () => {
+  const savePreset = async () => {
     if (!presetName.value.trim()) return;
 
     const existingIndex = presets.value.findIndex(
@@ -134,7 +134,20 @@ export const usePresetManagerWorkflow = ({ props, emit }) => {
 
     if (existingIndex >= 0) {
       // 同名预设走覆盖确认，避免无提示地替换历史配置。
-      if (confirm(`预设"${presetName.value}"已存在，是否更新？`)) {
+      const confirmed = dialog?.warning
+        ? await new Promise((resolve) =>
+            dialog.warning({
+              title: "更新预设",
+              content: `预设"${presetName.value}"已存在，是否更新？`,
+              positiveText: "更新",
+              negativeText: "取消",
+              onPositiveClick: () => resolve(true),
+              onNegativeClick: () => resolve(false),
+              onClose: () => resolve(false),
+            }),
+          )
+        : false;
+      if (confirmed) {
         presets.value[existingIndex] = newPreset;
       } else {
         return;

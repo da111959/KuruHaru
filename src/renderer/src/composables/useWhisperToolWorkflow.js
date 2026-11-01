@@ -5,6 +5,7 @@ import { loadConfig, saveConfig } from "../api/configApi";
 import {
   startTask,
   countMediaFiles,
+  getTaskHistory,
   onLogUpdate,
   onTaskFinished,
 } from "../api/whisperApi";
@@ -282,7 +283,7 @@ export const useWhisperToolWorkflow = () => {
   };
 
   // 任务完成处理器
-  const taskFinishedHandler = (_event, taskResult = {}) => {
+    const taskFinishedHandler = (taskResult = {}) => {
     store.stopTask();
 
     const taskState = classifyWhisperTaskResult(taskResult);
@@ -296,6 +297,9 @@ export const useWhisperToolWorkflow = () => {
 
     if (taskState.isError) {
       store.addLog(`[系统] 翻译任务异常结束：${taskState.errorText}`);
+      if (Number.isFinite(taskResult.wallClockMs)) {
+        store.addLog(`[系统] 本次任务耗时 ${formatElapsedTime(taskResult.wallClockMs)}`);
+      }
 
       if (handleTaskFailure(taskState)) {
         return;
@@ -305,8 +309,10 @@ export const useWhisperToolWorkflow = () => {
       resultData.value = {
         success: false,
         type: "translate",
-        title: "翻译任务失败",
-        message: taskState.errorText,
+        title: taskState.isValidationFailure ? "字幕校验未通过" : "翻译任务失败",
+        message: taskState.isValidationFailure
+          ? `${taskState.errorText}${Array.isArray(taskResult.validation?.missingSubtitleFiles) ? `\n缺少字幕：${taskResult.validation.missingSubtitleFiles.slice(0, 5).join("、")}` : ""}`
+          : taskState.errorText,
       };
       showResultModal.value = true;
       return;
@@ -317,14 +323,37 @@ export const useWhisperToolWorkflow = () => {
     }
     store.setProgress(100);
     store.addLog("[系统] 翻译任务完成");
+    if (Number.isFinite(taskResult.wallClockMs)) {
+      store.addLog(`[系统] 本次任务耗时 ${formatElapsedTime(taskResult.wallClockMs)}`);
+    }
+    if (taskResult.validation?.skippedAudioValidation) {
+      store.addLog(`[系统] ${taskResult.validation.error}`);
+    }
     resultData.value = {
       success: true,
       type: "translate",
       title: "翻译任务结束",
-      message: recoveredCount > 0 ? `期间自动恢复 ${recoveredCount} 次。` : "",
+      message: [
+        recoveredCount > 0 ? `期间自动恢复 ${recoveredCount} 次。` : "",
+        Number.isFinite(taskResult.wallClockMs)
+          ? `本次任务耗时 ${formatElapsedTime(taskResult.wallClockMs)}。`
+          : "",
+      ].filter(Boolean).join(" "),
     };
     resetRecoveryState();
     showResultModal.value = true;
+  };
+
+  const formatElapsedTime = (milliseconds) => {
+    const totalSeconds = Math.floor(Math.max(0, milliseconds) / 1000);
+    const hours = Math.floor(totalSeconds / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const seconds = totalSeconds % 60;
+    return hours > 0
+      ? `${hours}小时${minutes}分${seconds}秒`
+      : minutes > 0
+        ? `${minutes}分${seconds}秒`
+        : `${seconds}秒`;
   };
 
   onMounted(async () => {
@@ -350,6 +379,18 @@ export const useWhisperToolWorkflow = () => {
       }
     } else {
       console.log("[WhisperTool] 未找到 whisper 配置");
+    }
+
+    try {
+      const taskHistory = await getTaskHistory();
+      const latestTask = Array.isArray(taskHistory) ? taskHistory[0] : null;
+      if (latestTask?.stage === "interrupted") {
+        store.addLog(
+          `[系统] 上次 Whisper 任务被中断，阶段=${latestTask.stage}，耗时=${formatElapsedTime(latestTask.wallClockMs || 0)}。可重新开始未完成工作。`,
+        );
+      }
+    } catch (error) {
+      console.warn("[WhisperTool] 加载任务历史失败", error?.message || error);
     }
   });
 

@@ -1,11 +1,9 @@
 import { contextBridge, ipcRenderer } from "electron";
-import { electronAPI } from "@electron-toolkit/preload";
 
 const ARG_NONE = "none";
 const ARG_DIRECT = "direct";
 const ARG_PAYLOAD = "payload";
 
-const LISTENER_RAW = "raw";
 const LISTENER_VALUE = "value";
 const LISTENER_EVENT_AND_VALUE = "event-and-value";
 
@@ -43,36 +41,22 @@ const createListenerMethod = (descriptor) => {
   const normalizedDescriptor = {
     mode: LISTENER_VALUE,
     mapValue: (value) => value,
-    clearBeforeListen: false,
     returnUnsubscribe: false,
-    returnSubscription: false,
     ...descriptor,
   };
 
   return (callback) => {
-    if (normalizedDescriptor.clearBeforeListen) {
-      ipcRenderer.removeAllListeners(normalizedDescriptor.channel);
-    }
-
-    if (normalizedDescriptor.mode === LISTENER_RAW) {
-      return ipcRenderer.on(normalizedDescriptor.channel, callback);
-    }
-
     const handler =
       normalizedDescriptor.mode === LISTENER_EVENT_AND_VALUE
         ? (event, value) =>
             callback(event, normalizedDescriptor.mapValue(value))
         : (event, value) => callback(normalizedDescriptor.mapValue(value));
 
-    const subscription = ipcRenderer.on(normalizedDescriptor.channel, handler);
+    ipcRenderer.on(normalizedDescriptor.channel, handler);
 
     if (normalizedDescriptor.returnUnsubscribe) {
       return () =>
         ipcRenderer.removeListener(normalizedDescriptor.channel, handler);
-    }
-
-    if (normalizedDescriptor.returnSubscription) {
-      return subscription;
     }
 
     return undefined;
@@ -94,6 +78,7 @@ const WINDOW_CONTROL_INVOKE_MAP = {
   isMaximized: "window-is-maximized",
   getState: "window-get-state",
   getBounds: "window-get-bounds",
+  setOpacity: { channel: "window-set-opacity", args: ARG_DIRECT },
   setBounds: { channel: "window-set-bounds", args: ARG_DIRECT },
 };
 
@@ -101,7 +86,6 @@ const INVOKE_MAP = {
   // 配置与文件
   loadConfig: "get-config",
   saveConfig: { channel: "save-config", args: ARG_DIRECT },
-  selectFile: { channel: "dialog:openFile", args: ARG_DIRECT },
   dialogOpenFile: { channel: "dialog:openFile", args: ARG_DIRECT },
   dialogOpenDirectory: "dialog:openDirectory",
   dialogSaveFile: { channel: "dialog:saveFile", args: ARG_DIRECT },
@@ -118,27 +102,15 @@ const INVOKE_MAP = {
   // 保存自定义路径配置
   saveCustomPaths: { channel: "save-custom-paths", args: ARG_DIRECT },
 
-  // 个人中心
-  getUserProfile: "get-user-profile",
-  updateUserProfile: { channel: "update-user-profile", args: ARG_DIRECT },
-  getSystemInfo: "get-system-info",
-  getStatistics: "get-statistics",
-  openLogsDir: "open-logs-dir",
   clearCache: {
     channel: "clear-cache",
     args: ARG_PAYLOAD,
     payload: (cacheFile = "recent_activity.json") => ({ cacheFile }),
   },
-  exportData: "export-data",
-  importData: "import-data",
-  clearAllData: "clear-all-data",
-  updateSystemSettings: { channel: "update-system-settings", args: ARG_DIRECT },
-  resetSystemSettings: "reset-system-settings",
-
   // 模块接口
   asmrLogin: { channel: "asmr-login", args: ARG_DIRECT },
-  asmrFetchPlaylist: { channel: "asmr-fetch-playlist", args: ARG_DIRECT },
-  asmrDeleteByRJ: { channel: "asmr-delete-by-rj", args: ARG_DIRECT },
+  asmrCheckLogin: "asmr-check-login",
+  asmrLogout: "asmr-logout",
   asmrRunAudioDownloader: {
     channel: "asmr-audio-downloader-run",
     args: ARG_DIRECT,
@@ -149,7 +121,14 @@ const INVOKE_MAP = {
     channel: "translation-automation-save-config",
     args: ARG_DIRECT,
   },
-  asmrDeleteWorks: { channel: "asmr-delete-works", args: ARG_DIRECT },
+  asmrCloudDeletePreview: {
+    channel: "asmr-cloud-delete-preview",
+    args: ARG_DIRECT,
+  },
+  asmrCloudDeleteExecute: {
+    channel: "asmr-cloud-delete-execute",
+    args: ARG_DIRECT,
+  },
   asmrFetchChineseWorks: {
     channel: "asmr-fetch-chinese-works",
     args: ARG_DIRECT,
@@ -165,25 +144,24 @@ const INVOKE_MAP = {
     args: ARG_DIRECT,
   },
   filterRjFromUrl: { channel: "filter-rj-from-url", args: ARG_DIRECT },
-  filterRjFromUrlLegacy: {
-    channel: "filter_rj_from_url",
+  asmrListFilterSnapshots: "asmr-list-filter-snapshots",
+  asmrReadFilterSnapshot: {
+    channel: "asmr-read-filter-snapshot",
     args: ARG_DIRECT,
   },
-  scanLocalIds: {
-    channel: "scan-local-ids",
-    args: ARG_PAYLOAD,
-    payload: (path) => ({ path }),
+  asmrDiffFilterSnapshots: {
+    channel: "asmr-diff-filter-snapshots",
+    args: ARG_DIRECT,
   },
   scanLocalArchives: { channel: "scan-local-archives", args: ARG_DIRECT },
-  getUploadHistory: "get-upload-history",
-  loadTagDb: "load-tag-db",
-  asmrGetCachedCloudWorks: "asmr-get-cached-cloud-works",
   asmrFetchCloudWorks: "asmr-fetch-cloud-works",
   triggerCloudDataFetch: "asmr-trigger-cloud-data-fetch",
+  asmrGetCachedCloudWorks: "asmr-get-cached-cloud-works",
 
   // Whisper
   countMediaFiles: { channel: "count-media-files", args: ARG_DIRECT },
   zipSubtitles: { channel: "zip-subtitles", args: ARG_DIRECT },
+  getTaskHistory: { channel: "whisper-get-task-history" },
 
   // Tools
   extractFileNames: { channel: "extract-file-names", args: ARG_DIRECT },
@@ -200,8 +178,9 @@ const INVOKE_MAP = {
   // Telegram
   tgCheckLogin: "tg-check-login",
   tgLogin: { channel: "tg-login", args: ARG_DIRECT },
+  tgCancelAuth: "tg-cancel-auth",
+  tgReadUploadHistory: "tg-read-upload-history",
   tgCancelUpload: "tg-cancel-upload",
-  tgGetStatistics: "tg-get-statistics",
 
   // Telegram 搜索 Bot
   tgBotStart: "tg-bot-start",
@@ -213,71 +192,33 @@ const INVOKE_MAP = {
   tgBotGenerateDailyZip: "tg-bot-generate-daily-zip",
   tgInfoCacheBuild: { channel: "tg-info-cache-build", args: ARG_DIRECT },
   tgInfoCacheStatus: { channel: "tg-info-cache-status", args: ARG_DIRECT },
+  tgInfoCachePause: "tg-info-cache-pause",
+  tgInfoCacheResume: { channel: "tg-info-cache-resume", args: ARG_DIRECT },
 
   // 最近活动（新增）
   tgScanRecentActivity: "tg-scan-recent-activity",
   tgReadRecentActivity: "tg-read-recent-activity",
-  tgGetRecentActivity: "get-recent-activity",
   tgReadRjList: { channel: "read-rj-list", args: ARG_DIRECT },
   tgDownloadFile: { channel: "download-tg-file", args: ARG_DIRECT },
   tgDownloadFiles: { channel: "download-tg-files", args: ARG_DIRECT },
-  tgFilterActivityByTime: {
-    channel: "tg-filter-activity-by-time",
-    args: ARG_DIRECT,
-  },
-  tgFindRaishunyaDate: "tg-find-raishunya-date",
-  tgGetRJFilesByRange: {
-    channel: "tg-get-rj-files-by-range",
-    args: ARG_DIRECT,
-  },
   tgScanRjDuplicates: { channel: "tg-scan-rj-duplicates", args: ARG_DIRECT },
-  tgDeleteDuplicateMessages: {
-    channel: "tg-delete-duplicate-messages",
+  tgRjDuplicatePreview: {
+    channel: "tg-rj-duplicate-preview",
+    args: ARG_DIRECT,
+  },
+  tgRjDuplicateExecute: {
+    channel: "tg-rj-duplicate-execute",
+    args: ARG_DIRECT,
+  },
+  tgRjDuplicateExport: {
+    channel: "tg-rj-duplicate-export",
     args: ARG_DIRECT,
   },
   tgInfoErrorRecover: { channel: "tg-info-error-recover", args: ARG_DIRECT },
 
-  // Workflow Runtime
-  workflowBootstrap: "workflow-bootstrap",
-  workflowTemplateList: "workflow-template-list",
-  workflowTemplateLoad: { channel: "workflow-template-load", args: ARG_DIRECT },
-  workflowDocumentGet: { channel: "workflow-document-get", args: ARG_DIRECT },
-  workflowDocumentSave: { channel: "workflow-document-save", args: ARG_DIRECT },
-  workflowCatalogGet: "workflow-catalog-get",
-  workflowNodeDocsGet: { channel: "workflow-node-docs-get", args: ARG_DIRECT },
-  workflowEnqueue: { channel: "workflow-enqueue", args: ARG_DIRECT },
-  workflowPartialEnqueue: {
-    channel: "workflow-partial-enqueue",
-    args: ARG_DIRECT,
-  },
-  workflowRunGet: { channel: "workflow-run-get", args: ARG_DIRECT },
-  workflowRunList: { channel: "workflow-run-list", args: ARG_DIRECT },
-  workflowRecoveryReportGet: {
-    channel: "workflow-recovery-report-get",
-    args: ARG_DIRECT,
-  },
-  workflowList: "workflow-list",
-  workflowGet: { channel: "workflow-get", args: ARG_DIRECT },
-  workflowSave: { channel: "workflow-save", args: ARG_DIRECT },
-  workflowDelete: { channel: "workflow-delete", args: ARG_DIRECT },
-  workflowValidate: { channel: "workflow-validate", args: ARG_DIRECT },
-  workflowRun: { channel: "workflow-run", args: ARG_DIRECT },
-  workflowQueueRunFront: {
-    channel: "workflow-queue-run-front",
-    args: ARG_DIRECT,
-  },
-  workflowQueueGet: "workflow-queue-get",
-  workflowQueueClearPending: "workflow-queue-clear-pending",
-  workflowCancel: { channel: "workflow-cancel", args: ARG_DIRECT },
-  workflowGetRun: { channel: "workflow-get-run", args: ARG_DIRECT },
-  workflowListRuns: { channel: "workflow-list-runs", args: ARG_DIRECT },
-  workflowGetObjectInfo: "workflow-get-object-info",
-  workflowListNodeDefinitions: "workflow-list-node-definitions",
 };
 
 const SEND_MAP = {
-  asmrRemoveWorks: { channel: "asmr-remove-works", args: ARG_DIRECT },
-  asmrRemoveWorksByRJ: { channel: "asmr-remove-works-by-rj", args: ARG_DIRECT },
   startTask: { channel: "start-task", args: ARG_DIRECT },
   stopTask: "stop-task",
   tgUploadFiles: { channel: "tg-upload-files", args: ARG_DIRECT },
@@ -289,23 +230,15 @@ const LISTENER_MAP = {
     channel: "tg-auth-needed",
     returnUnsubscribe: true,
   },
-  onTgUploadFinished: {
-    channel: "tg-upload-finished",
-    mapValue: (value) => value || {},
-    returnUnsubscribe: true,
-  },
 
   // 🟢 日志监听保护 - 移除旧监听器后再注册
   onLogUpdate: {
     channel: "log-update",
-    clearBeforeListen: true,
     mapValue: (value) => value || { type: "system", msg: "" },
     returnUnsubscribe: true,
   },
   onTaskFinished: {
     channel: "task-finished",
-    mode: LISTENER_EVENT_AND_VALUE,
-    clearBeforeListen: true,
     mapValue: (value) => value || {},
     returnUnsubscribe: true,
   },
@@ -314,13 +247,12 @@ const LISTENER_MAP = {
   onCloudWorksUpdated: {
     channel: "cloud-works-updated",
     mapValue: (value) => value || {},
-    returnSubscription: true,
+    returnUnsubscribe: true,
   },
-
-  // 登录成功事件监听
-  onAsmrLoggedIn: {
-    channel: "asmr-logged-in",
-    mode: LISTENER_RAW,
+  onChineseListProgress: {
+    channel: "chinese-list-progress",
+    mapValue: (value) => value || {},
+    returnUnsubscribe: true,
   },
 
   onWindowStateChanged: {
@@ -329,11 +261,6 @@ const LISTENER_MAP = {
     returnUnsubscribe: true,
   },
 
-  onWorkflowRunEvent: {
-    channel: "workflow-run-event",
-    mapValue: (value) => value || {},
-    returnUnsubscribe: true,
-  },
   onTranslationAutomationEvent: {
     channel: "translation-automation-event",
     mapValue: (value) => value || {},
@@ -341,175 +268,135 @@ const LISTENER_MAP = {
   },
 };
 
+const invokeMethods = createChannelCallMethods("invoke", INVOKE_MAP);
+const sendMethods = createChannelCallMethods("send", SEND_MAP);
+const listenerMethods = createListenerMethods(LISTENER_MAP);
+const windowControls = {
+  supported: process.platform === "win32",
+  ...createChannelCallMethods("invoke", WINDOW_CONTROL_INVOKE_MAP),
+};
+
 const api = {
-  send: (channel, data) => ipcRenderer.send(channel, data),
-  invoke: (channel, data) => ipcRenderer.invoke(channel, data),
-
-  // 🟢 通用监听器空值保护
-  on: (channel, func) => {
-    ipcRenderer.on(channel, (event, ...args) => {
-      const safeData = args[0] || {};
-      func(safeData);
-    });
+  config: {
+    load: invokeMethods.loadConfig,
+    save: invokeMethods.saveConfig,
+    saveCustomPaths: invokeMethods.saveCustomPaths,
   },
-
-  // 🟢 特殊监听器，传递事件对象和数据
-  onWithEvent: (channel, func) => {
-    ipcRenderer.on(channel, (event, ...args) => {
-      const safeData = args[0] || {};
-      func(event, safeData);
-    });
+  dialog: {
+    openFile: invokeMethods.dialogOpenFile,
+    openDirectory: invokeMethods.dialogOpenDirectory,
+    saveFile: invokeMethods.dialogSaveFile,
+    selectFile: async (type) => {
+      const result =
+        type === "dir"
+          ? await invokeMethods.dialogOpenDirectory()
+          : await invokeMethods.dialogOpenFile({
+              type: "file",
+              filters: type === "exe" ? [{ name: "Executable", extensions: ["exe"] }] : [],
+            });
+      return result?.canceled ? null : result?.filePath || null;
+    },
   },
-
-  removeListener: (channel, func) => ipcRenderer.removeListener(channel, func),
-  removeAllListeners: (channel) => ipcRenderer.removeAllListeners(channel),
-
-  windowControls: {
-    supported: process.platform === "win32",
-    ...createChannelCallMethods("invoke", WINDOW_CONTROL_INVOKE_MAP),
+  system: {
+    clearCache: invokeMethods.clearCache,
+    readImageAsBase64: invokeMethods.readImageAsBase64,
+    captureMainWindow: invokeMethods.captureMainWindow,
+    getDefaultAvatar: invokeMethods.getDefaultAvatar,
+    getWindowState: windowControls.getState,
+    onWindowStateChanged: listenerMethods.onWindowStateChanged,
+    windowControls,
   },
-
-  ...createChannelCallMethods("invoke", INVOKE_MAP),
-  ...createChannelCallMethods("send", SEND_MAP),
-  ...createListenerMethods(LISTENER_MAP),
-};
-
-// 命名空间 API（保留原有平铺方法，逐步迁移）
-api.config = {
-  load: api.loadConfig,
-  save: api.saveConfig,
-  saveCustomPaths: api.saveCustomPaths,
-};
-
-api.dialog = {
-  openFile: api.dialogOpenFile,
-  openDirectory: api.dialogOpenDirectory,
-  saveFile: api.dialogSaveFile,
-  selectFile: api.selectFile,
-};
-
-api.system = {
-  clearCache: api.clearCache,
-  readImageAsBase64: api.readImageAsBase64,
-  captureMainWindow: api.captureMainWindow,
-  getDefaultAvatar: api.getDefaultAvatar,
-  getWindowState: api.windowControls.getState,
-  onWindowStateChanged: api.onWindowStateChanged,
-  windowControls: api.windowControls,
-};
-
-api.whisper = {
-  startTask: api.startTask,
-  stopTask: api.stopTask,
-  countMediaFiles: api.countMediaFiles,
-  zipSubtitles: api.zipSubtitles,
-  onTaskFinished: api.onTaskFinished,
-  onLogUpdate: api.onLogUpdate,
-};
-
-api.local = {
-  scanLocalArchives: api.scanLocalArchives,
-  readFile: api.readFile,
-  writeFile: api.writeFile,
-};
-
-api.tools = {
-  extractFileNames: api.extractFileNames,
-  cleanData: api.cleanData,
-  cleanRecentUploadedSubtitles: api.cleanRecentUploadedSubtitles,
-  convertSubtitleFormat: api.convertSubtitleFormat,
-  zipSubtitles: api.zipSubtitles,
-};
-
-api.asmr = {
-  login: api.asmrLogin,
-  fetchCloudWorks: api.asmrFetchCloudWorks,
-  getCachedCloudWorks: api.asmrGetCachedCloudWorks,
-  triggerCloudDataFetch: api.triggerCloudDataFetch,
-  runAudioDownloader: api.asmrRunAudioDownloader,
-  fetchChineseWorks: api.asmrFetchChineseWorks,
-  setChineseListPath: api.asmrSetChineseListPath,
-  getChineseListPath: api.asmrGetChineseListPath,
-  readChineseList: api.asmrReadChineseList,
-  writeChineseList: api.asmrWriteChineseList,
-  filterRjFromUrl: api.filterRjFromUrl,
-  deleteWorks: api.asmrDeleteWorks,
-  deleteByRJ: api.asmrDeleteByRJ,
-};
-
-api.translationAutomation = {
-  status: api.translationAutomationStatus,
-  run: api.translationAutomationRun,
-  saveConfig: api.translationAutomationSaveConfig,
-  onEvent: api.onTranslationAutomationEvent,
-};
-
-api.tg = {
-  checkLogin: api.tgCheckLogin,
-  login: api.tgLogin,
-  uploadFiles: api.tgUploadFiles,
-  cancelUpload: api.tgCancelUpload,
-  authReply: api.tgAuthReply,
-  onAuthNeeded: api.onTgAuthNeeded,
-  onUploadFinished: api.onTgUploadFinished,
-  getRecentActivity: api.tgGetRecentActivity,
-  readRecentActivity: api.tgReadRecentActivity,
-  scanRecentActivity: api.tgScanRecentActivity,
-  readRjList: api.tgReadRjList,
-  downloadFile: api.tgDownloadFile,
-  downloadFiles: api.tgDownloadFiles,
-  botStart: api.tgBotStart,
-  botStop: api.tgBotStop,
-  botStatus: api.tgBotStatus,
-  botSearch: api.tgBotSearch,
-  botInfo: api.tgBotInfo,
-  botSyncHistory: api.tgBotSyncHistory,
-  botGenerateDailyZip: api.tgBotGenerateDailyZip,
-  infoCacheBuild: api.tgInfoCacheBuild,
-  infoCacheStatus: api.tgInfoCacheStatus,
-  scanRjDuplicates: api.tgScanRjDuplicates,
-  deleteDuplicateMessages: api.tgDeleteDuplicateMessages,
-  infoErrorRecover: api.tgInfoErrorRecover,
-};
-
-api.workflow = {
-  bootstrap: api.workflowBootstrap,
-  templateList: api.workflowTemplateList,
-  templateLoad: api.workflowTemplateLoad,
-  documentGet: api.workflowDocumentGet,
-  documentSave: api.workflowDocumentSave,
-  catalogGet: api.workflowCatalogGet,
-  nodeDocsGet: api.workflowNodeDocsGet,
-  enqueue: api.workflowEnqueue,
-  partialEnqueue: api.workflowPartialEnqueue,
-  runGet: api.workflowRunGet,
-  runList: api.workflowRunList,
-  recoveryReportGet: api.workflowRecoveryReportGet,
-  list: api.workflowList,
-  get: api.workflowGet,
-  save: api.workflowSave,
-  delete: api.workflowDelete,
-  validate: api.workflowValidate,
-  run: api.workflowRun,
-  queueRunFront: api.workflowQueueRunFront,
-  queueGet: api.workflowQueueGet,
-  queueClearPending: api.workflowQueueClearPending,
-  cancel: api.workflowCancel,
-  getRun: api.workflowGetRun,
-  listRuns: api.workflowListRuns,
-  getObjectInfo: api.workflowGetObjectInfo,
-  listNodeDefinitions: api.workflowListNodeDefinitions,
-  onRunEvent: api.onWorkflowRunEvent,
+  whisper: {
+    startTask: sendMethods.startTask,
+    stopTask: sendMethods.stopTask,
+    countMediaFiles: invokeMethods.countMediaFiles,
+    zipSubtitles: invokeMethods.zipSubtitles,
+    getTaskHistory: invokeMethods.getTaskHistory,
+    onTaskFinished: listenerMethods.onTaskFinished,
+    onLogUpdate: listenerMethods.onLogUpdate,
+  },
+  local: {
+    scanLocalArchives: invokeMethods.scanLocalArchives,
+    readFile: invokeMethods.readFile,
+    writeFile: invokeMethods.writeFile,
+  },
+  tools: {
+    extractFileNames: invokeMethods.extractFileNames,
+    cleanData: invokeMethods.cleanData,
+    cleanRecentUploadedSubtitles: invokeMethods.cleanRecentUploadedSubtitles,
+    convertSubtitleFormat: invokeMethods.convertSubtitleFormat,
+    zipSubtitles: invokeMethods.zipSubtitles,
+  },
+  asmr: {
+    login: invokeMethods.asmrLogin,
+    checkLogin: invokeMethods.asmrCheckLogin,
+    logout: invokeMethods.asmrLogout,
+    fetchCloudWorks: invokeMethods.asmrFetchCloudWorks,
+    triggerCloudDataFetch: invokeMethods.triggerCloudDataFetch,
+    runAudioDownloader: invokeMethods.asmrRunAudioDownloader,
+    fetchChineseWorks: invokeMethods.asmrFetchChineseWorks,
+    setChineseListPath: invokeMethods.asmrSetChineseListPath,
+    getChineseListPath: invokeMethods.asmrGetChineseListPath,
+    readChineseList: invokeMethods.asmrReadChineseList,
+    writeChineseList: invokeMethods.asmrWriteChineseList,
+    getCachedCloudWorks: invokeMethods.asmrGetCachedCloudWorks,
+    onCloudWorksUpdated: listenerMethods.onCloudWorksUpdated,
+    onChineseListProgress: listenerMethods.onChineseListProgress,
+    filterRjFromUrl: invokeMethods.filterRjFromUrl,
+    listFilterSnapshots: invokeMethods.asmrListFilterSnapshots,
+    readFilterSnapshot: invokeMethods.asmrReadFilterSnapshot,
+    diffFilterSnapshots: invokeMethods.asmrDiffFilterSnapshots,
+    cloudDeletePreview: invokeMethods.asmrCloudDeletePreview,
+    cloudDeleteExecute: invokeMethods.asmrCloudDeleteExecute,
+  },
+  translationAutomation: {
+    status: invokeMethods.translationAutomationStatus,
+    run: invokeMethods.translationAutomationRun,
+    saveConfig: invokeMethods.translationAutomationSaveConfig,
+    onEvent: listenerMethods.onTranslationAutomationEvent,
+  },
+  tg: {
+    checkLogin: invokeMethods.tgCheckLogin,
+    login: invokeMethods.tgLogin,
+    cancelAuth: invokeMethods.tgCancelAuth,
+    readUploadHistory: invokeMethods.tgReadUploadHistory,
+    uploadFiles: sendMethods.tgUploadFiles,
+    cancelUpload: invokeMethods.tgCancelUpload,
+    authReply: sendMethods.tgAuthReply,
+    onAuthNeeded: listenerMethods.onTgAuthNeeded,
+    onLogUpdate: listenerMethods.onLogUpdate,
+    readRecentActivity: invokeMethods.tgReadRecentActivity,
+    scanRecentActivity: invokeMethods.tgScanRecentActivity,
+    readRjList: invokeMethods.tgReadRjList,
+    downloadFile: invokeMethods.tgDownloadFile,
+    downloadFiles: invokeMethods.tgDownloadFiles,
+    botStart: invokeMethods.tgBotStart,
+    botStop: invokeMethods.tgBotStop,
+    botStatus: invokeMethods.tgBotStatus,
+    botSearch: invokeMethods.tgBotSearch,
+    botInfo: invokeMethods.tgBotInfo,
+    botSyncHistory: invokeMethods.tgBotSyncHistory,
+    botGenerateDailyZip: invokeMethods.tgBotGenerateDailyZip,
+    infoCacheBuild: invokeMethods.tgInfoCacheBuild,
+    infoCacheStatus: invokeMethods.tgInfoCacheStatus,
+    infoCachePause: invokeMethods.tgInfoCachePause,
+    infoCacheResume: invokeMethods.tgInfoCacheResume,
+    scanRjDuplicates: invokeMethods.tgScanRjDuplicates,
+    previewRjDuplicateDelete: invokeMethods.tgRjDuplicatePreview,
+    executeRjDuplicateDelete: invokeMethods.tgRjDuplicateExecute,
+    exportRjDuplicateAudit: invokeMethods.tgRjDuplicateExport,
+    infoErrorRecover: invokeMethods.tgInfoErrorRecover,
+  },
 };
 
 if (process.contextIsolated) {
   try {
-    contextBridge.exposeInMainWorld("electron", electronAPI);
+    contextBridge.exposeInMainWorld("electron", process.versions);
     contextBridge.exposeInMainWorld("api", api);
   } catch (error) {
     console.error(error);
   }
 } else {
-  window.electron = electronAPI;
+  window.electron = process.versions;
   window.api = api;
 }

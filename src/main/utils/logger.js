@@ -5,6 +5,7 @@
 import fs from "fs";
 import path from "path";
 import { app } from "electron";
+import { format as formatLogArguments } from "node:util";
 
 /**
  * 获取日志目录
@@ -121,57 +122,40 @@ function formatLogMessage(moduleName, level, message) {
   return `[${timestamp}] [${level.toUpperCase()}] [${moduleName}] ${message}`;
 }
 
-function isBrokenPipeError(error) {
-  const code = String(error?.code || error?.errno || "").toUpperCase();
-  if (code === "EPIPE") {
-    return true;
-  }
-  const message = String(error?.message || error || "");
-  return message.includes("EPIPE");
-}
+const SENSITIVE_LOG_KEYS = /^(?:authorization|cookie|password|session|token|tokenPreview|accessToken|refreshToken|botToken|apiHash|rpcSecret|secret|apiKey)$/i;
+const SENSITIVE_LOG_STRING_PATTERNS = [
+  /(\bBearer\s+)[^\s,;]+/gi,
+  /(\b(?:token|password|apiHash|session)\s*[:=]\s*)([^\s,;]+)/gi,
+  /(\btokenPreview\s*[:=]\s*)[^\s,;]+/gi,
+  /(\b(?:botToken|rpcSecret|secret|apiKey)\s*[:=]\s*)[^\s,;]+/gi,
+  /(使用Token\s*[:：]?\s*)[^\s,;]+/gi,
+];
 
-let stdioBroken = false;
-let stdioGuardReady = false;
-
-function markStdioState(error) {
-  if (isBrokenPipeError(error)) {
-    stdioBroken = true;
-    return true;
-  }
-  return false;
-}
-
-function ensureStdioGuard() {
-  if (stdioGuardReady) {
-    return;
-  }
-  stdioGuardReady = true;
-
-  const onStreamError = (error) => {
-    markStdioState(error);
-  };
-
-  try {
-    process.stdout?.on?.("error", onStreamError);
-    process.stderr?.on?.("error", onStreamError);
-  } catch {
-    // ignore stream guard setup errors
-  }
-}
-
-ensureStdioGuard();
-
-function safeConsoleWrite(method, ...args) {
-  if (stdioBroken) {
-    return;
-  }
-  try {
-    method(...args);
-  } catch (error) {
-    if (!markStdioState(error)) {
-      throw error;
+function redactLogValue(value, key = "") {
+  if (SENSITIVE_LOG_KEYS.test(key)) return "[redacted]";
+  if (Array.isArray(value)) return value.map((item) => redactLogValue(item));
+  if (value && typeof value === "object") {
+    if (value instanceof Error) {
+      return {
+        name: value.name,
+        message: redactLogValue(value.message),
+        stack: redactLogValue(value.stack),
+      };
     }
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) return value;
+    return Object.fromEntries(
+      Object.entries(value).map(([entryKey, entryValue]) => [
+        entryKey,
+        redactLogValue(entryValue, entryKey),
+      ]),
+    );
   }
+  if (typeof value !== "string") return value;
+  return SENSITIVE_LOG_STRING_PATTERNS.reduce(
+    (result, pattern) => result.replace(pattern, "$1[redacted]"),
+    value,
+  );
 }
 
 /**
@@ -194,7 +178,7 @@ async function rotateLogFileIfNeeded(logFilePath) {
   }
 }
 
-function writeToFile(message, type) {
+function writeToFile(message) {
   fileWriteQueue = fileWriteQueue
     .catch(() => undefined)
     .then(async () => {
@@ -210,13 +194,7 @@ function writeToFile(message, type) {
       await rotateLogFileIfNeeded(logFilePath);
       await fs.promises.appendFile(logFilePath, `${message}\n`, "utf-8");
     })
-    .catch((error) => {
-      safeConsoleWrite(
-        console.error,
-        `[Logger] Failed to write to log file (${type}):`,
-        error,
-      );
-    });
+    .catch(() => undefined);
 
   return fileWriteQueue;
 }
@@ -227,30 +205,18 @@ function writeToFile(message, type) {
  * @returns {Object} 日志发送函数对象
  */
 export function createLogSender(type) {
-  const logWithFile = async (level, msg) => {
+  const logWithFile = async (level, ...args) => {
     const normalizedLevel = normalizeLogLevel(level);
 
     if (!(await shouldLog(normalizedLevel))) {
       return;
     }
 
-    const formattedMessage = formatLogMessage(type, normalizedLevel, msg);
-
-    switch (normalizedLevel) {
-      case LOG_LEVEL.ERROR:
-        safeConsoleWrite(console.error, formattedMessage);
-        break;
-      case LOG_LEVEL.WARN:
-        safeConsoleWrite(console.warn, formattedMessage);
-        break;
-      case LOG_LEVEL.DEBUG:
-        safeConsoleWrite(console.debug, formattedMessage);
-        break;
-      default:
-        safeConsoleWrite(console.log, formattedMessage);
-    }
-
-    await writeToFile(formattedMessage, type);
+    // Match console's argument formatting so error details passed as a second
+    // argument are not silently dropped from file logs.
+    const message = formatLogArguments(...args.map((arg) => redactLogValue(arg)));
+    const formattedMessage = formatLogMessage(type, normalizedLevel, message);
+    await writeToFile(formattedMessage);
   };
 
   return {
@@ -259,9 +225,46 @@ export function createLogSender(type) {
         sender.send("log-update", { type, msg });
       }
     },
-    error: (msg) => logWithFile(LOG_LEVEL.ERROR, msg),
-    warn: (msg) => logWithFile(LOG_LEVEL.WARN, msg),
-    info: (msg) => logWithFile(LOG_LEVEL.INFO, msg),
-    debug: (msg) => logWithFile(LOG_LEVEL.DEBUG, msg),
+    error: (...args) => logWithFile(LOG_LEVEL.ERROR, ...args),
+    warn: (...args) => logWithFile(LOG_LEVEL.WARN, ...args),
+    info: (...args) => logWithFile(LOG_LEVEL.INFO, ...args),
+    debug: (...args) => logWithFile(LOG_LEVEL.DEBUG, ...args),
+  };
+}
+
+export function installMainProcessConsoleBridge(
+  targetConsole = console,
+  sender = createLogSender("console"),
+) {
+  const methodLevels = {
+    log: "info",
+    info: "info",
+    warn: "warn",
+    error: "error",
+    debug: "debug",
+  };
+  const originals = new Map();
+  const replacements = new Map();
+
+  for (const [method, level] of Object.entries(methodLevels)) {
+    const original = targetConsole[method];
+    if (typeof original !== "function") continue;
+
+    const replacement = (...args) => {
+      void Promise.resolve()
+        .then(() => sender[level](...args.map((arg) => redactLogValue(arg))))
+        .catch(() => undefined);
+    };
+    originals.set(method, original);
+    replacements.set(method, replacement);
+    targetConsole[method] = replacement;
+  }
+
+  return () => {
+    for (const [method, original] of originals) {
+      if (targetConsole[method] === replacements.get(method)) {
+        targetConsole[method] = original;
+      }
+    }
   };
 }

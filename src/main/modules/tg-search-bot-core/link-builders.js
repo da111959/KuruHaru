@@ -51,8 +51,6 @@ function createLinkResult(urls) {
   const deduped = dedupeLinks(urls);
   return {
     primaryUrl: deduped[0] || null,
-    alternateUrls: deduped.slice(1),
-    urls: deduped,
   };
 }
 

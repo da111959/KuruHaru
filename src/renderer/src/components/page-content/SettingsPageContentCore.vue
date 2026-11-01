@@ -2,8 +2,8 @@
   <div class="page-container settings-theme">
     <div class="page-header settings-header">
       <div class="page-header-main">
-        <span class="page-eyebrow">Control Center</span>
-        <h2 class="page-title">设置</h2>
+        <span class="page-eyebrow">系统设置</span>
+        <h1 class="page-title">设置</h1>
         <p class="page-header-subtitle">
           统一管理账号连接、机器人参数、外观和本地路径。
         </p>
@@ -20,11 +20,11 @@
     <div class="settings-container">
       <!-- 账户状态 -->
       <div class="section card">
-        <div class="section-header" @click="togglePanel('accountStatus')">
+        <button type="button" class="section-header" :aria-expanded="expandedPanels.accountStatus" aria-controls="settings-account-status" @click="togglePanel('accountStatus')">
           <span class="section-icon">
-            <n-icon :size="20">
+            <span class="icon-size-20">
               <Person24Regular />
-            </n-icon>
+            </span>
           </span>
           <div class="section-head-copy">
             <h3 class="section-title">账户状态</h3>
@@ -41,15 +41,15 @@
               expandedPanels.accountStatus ? "-" : "+"
             }}</span>
           </div>
-        </div>
-        <div v-show="expandedPanels.accountStatus" class="section-body">
+        </button>
+        <div id="settings-account-status" v-show="expandedPanels.accountStatus" class="section-body">
           <div class="status-grid">
             <div class="status-card" :class="{ connected: tgConnected }">
               <div class="status-top">
                 <span class="status-icon">
-                  <n-icon :size="18">
+                  <span class="icon-size-18">
                     <Airplane24Regular />
-                  </n-icon>
+                  </span>
                 </span>
                 <span class="status-name">Telegram</span>
                 <span
@@ -66,9 +66,9 @@
             <div class="status-card" :class="{ connected: asmrLoggedIn }">
               <div class="status-top">
                 <span class="status-icon">
-                  <n-icon :size="18">
+                  <span class="icon-size-18">
                     <Globe24Regular />
-                  </n-icon>
+                  </span>
                 </span>
                 <span class="status-name">ASMR.ONE</span>
                 <span
@@ -88,11 +88,11 @@
 
       <!-- Telegram 设置 -->
       <div class="section card">
-        <div class="section-header" @click="togglePanel('telegram')">
+        <button type="button" class="section-header" :aria-expanded="expandedPanels.telegram" aria-controls="settings-telegram" @click="togglePanel('telegram')">
           <span class="section-icon">
-            <n-icon :size="20">
+            <span class="icon-size-20">
               <Airplane24Regular />
-            </n-icon>
+            </span>
           </span>
           <div class="section-head-copy">
             <h3 class="section-title">Telegram</h3>
@@ -102,7 +102,7 @@
           </div>
           <div class="section-head-side">
             <span class="section-meta"
-              >{{ tgConnected ? "账号已连接" : "等待连接" }} ?
+              >{{ tgConnected ? "账号已连接" : "等待连接" }} ·
               {{
                 config.tg.botMode === "webhook" ? "Webhook" : "Polling"
               }}</span
@@ -111,48 +111,52 @@
               expandedPanels.telegram ? "-" : "+"
             }}</span>
           </div>
-        </div>
-        <div v-show="expandedPanels.telegram" class="section-body">
+        </button>
+        <div id="settings-telegram" v-show="expandedPanels.telegram" class="section-body">
           <div class="form-grid">
             <div class="form-row">
-              <label class="form-label">Bot Token</label>
+              <label class="form-label" for="settings-tg-bot-token">Bot Token</label>
               <div class="password-wrap">
                 <input
                   v-model="config.tg.botToken"
                   :type="showBotToken ? 'text' : 'password'"
+                  id="settings-tg-bot-token"
                   class="input"
                   placeholder="123456:ABC..."
                 />
                 <button
                   class="toggle-btn"
+                  :aria-label="showBotToken ? '隐藏 Bot Token' : '显示 Bot Token'"
                   @click="showBotToken = !showBotToken"
                 >
-                  <n-icon :size="16">
+                  <span class="icon-size-16">
                     <component
                       :is="showBotToken ? EyeOff24Regular : Eye24Regular"
                     />
-                  </n-icon>
+                  </span>
                 </button>
               </div>
             </div>
             <div class="form-row">
-              <label class="form-label">Bot 模式</label>
-              <select v-model="config.tg.botMode" class="input">
+              <label class="form-label" for="settings-tg-bot-mode">Bot 模式</label>
+              <select id="settings-tg-bot-mode" v-model="config.tg.botMode" class="input">
                 <option value="polling">polling（开发）</option>
                 <option value="webhook">webhook（生产）</option>
               </select>
             </div>
             <div v-if="config.tg.botMode === 'webhook'" class="form-row">
-              <label class="form-label">Webhook URL</label>
+              <label class="form-label" for="settings-tg-webhook-url">Webhook URL</label>
               <input
+                id="settings-tg-webhook-url"
                 v-model="config.tg.botWebhookUrl"
                 class="input"
                 placeholder="https://example.com/tg/bot/webhook"
               />
             </div>
             <div v-if="config.tg.botMode === 'webhook'" class="form-row">
-              <label class="form-label">Webhook Port</label>
+              <label class="form-label" for="settings-tg-webhook-port">Webhook Port</label>
               <input
+                id="settings-tg-webhook-port"
                 v-model="config.tg.botWebhookPort"
                 class="input"
                 type="number"
@@ -161,17 +165,19 @@
               />
             </div>
             <div class="form-row">
-              <label class="form-label">搜索频道 ID</label>
+            <label class="form-label" for="settings-tg-search-channel">搜索频道 ID</label>
               <input
+                id="settings-tg-search-channel"
                 v-model="config.tg.searchChannelId"
                 class="input"
                 placeholder="@channel 或 -100xxxxxxxxxx"
               />
             </div>
             <div class="form-row path-row">
-              <label class="form-label">前置包 TXT</label>
+            <label class="form-label" for="settings-tg-prepackage-path">前置包 TXT</label>
               <div class="path-input-row">
                 <input
+                  id="settings-tg-prepackage-path"
                   v-model="config.tg.prePackagePath"
                   class="input"
                   placeholder="选择前置包 txt 文件"
@@ -183,24 +189,27 @@
               </div>
             </div>
             <div class="form-row">
-              <label class="form-label">前置包链接</label>
+            <label class="form-label" for="settings-tg-prepackage-link">前置包链接</label>
               <input
+                id="settings-tg-prepackage-link"
                 v-model="config.tg.prePackageLink"
                 class="input"
                 placeholder="https://...（可选，用于 TXT 无链接场景）"
               />
             </div>
             <div class="form-row">
-              <label class="form-label">白名单用户 ID</label>
+            <label class="form-label" for="settings-tg-allowed-users">白名单用户 ID</label>
               <input
+                id="settings-tg-allowed-users"
                 v-model="config.tg.botAllowedUsers"
                 class="input"
                 placeholder="12345678, 87654321"
               />
             </div>
             <div class="form-row">
-              <label class="form-label">白名单群组 ID</label>
+            <label class="form-label" for="settings-tg-allowed-chats">白名单群组 ID</label>
               <input
+                id="settings-tg-allowed-chats"
                 v-model="config.tg.botAllowedChats"
                 class="input"
                 placeholder="-1001234567890, -1009876543210"
@@ -234,8 +243,9 @@
               >
             </div>
             <div class="form-row">
-              <label class="form-label">Bot 搜索上限</label>
+            <label class="form-label" for="settings-tg-search-limit">Bot 搜索上限</label>
               <input
+                id="settings-tg-search-limit"
                 v-model="config.tg.botSearchLimit"
                 class="input"
                 type="text"
@@ -245,16 +255,18 @@
               />
             </div>
             <div class="form-row">
-              <label class="form-label">Bot 索引文件</label>
+            <label class="form-label" for="settings-tg-history-path">Bot 索引文件</label>
               <input
+                id="settings-tg-history-path"
                 v-model="config.tg.botHistoryPath"
                 class="input"
                 placeholder="留空则默认 userData/data/tg-bot-history.json"
               />
             </div>
             <div class="form-row">
-              <label class="form-label">作品信息缓存最大大小 (MB)</label>
+            <label class="form-label" for="settings-tg-cache-size">作品信息缓存最大大小 (MB)</label>
               <input
+                id="settings-tg-cache-size"
                 v-model="config.tg.infoCacheMaxFileSizeMB"
                 class="input"
                 type="number"
@@ -270,59 +282,65 @@
               >
             </div>
             <div class="form-row">
-              <label class="form-label">App ID</label>
+            <label class="form-label" for="settings-tg-api-id">App ID</label>
               <input
+                id="settings-tg-api-id"
                 v-model="config.tg.apiId"
                 class="input"
                 placeholder="123456"
               />
             </div>
             <div class="form-row">
-              <label class="form-label">App Hash</label>
+            <label class="form-label" for="settings-tg-api-hash">App Hash</label>
               <div class="password-wrap">
                 <input
+                  id="settings-tg-api-hash"
                   v-model="config.tg.apiHash"
                   :type="showTgHash ? 'text' : 'password'"
                   class="input"
                   placeholder="abcdef..."
                 />
-                <button class="toggle-btn" @click="showTgHash = !showTgHash">
-                  <n-icon :size="16">
+                <button class="toggle-btn" :aria-label="showTgHash ? '隐藏 API Hash' : '显示 API Hash'" @click="showTgHash = !showTgHash">
+                  <span class="icon-size-16">
                     <component
                       :is="showTgHash ? EyeOff24Regular : Eye24Regular"
                     />
-                  </n-icon>
+                  </span>
                 </button>
               </div>
             </div>
             <div class="form-row">
-              <label class="form-label">手机号</label>
+            <label class="form-label" for="settings-tg-phone">手机号</label>
               <input
+                id="settings-tg-phone"
                 v-model="config.tg.phone"
                 class="input"
                 placeholder="+86138..."
               />
             </div>
             <div class="form-row">
-              <label class="form-label">讨论组 ID</label>
+            <label class="form-label" for="settings-tg-discussion">讨论组 ID</label>
               <input
+                id="settings-tg-discussion"
                 v-model="config.tg.discussion"
                 class="input"
                 placeholder="讨论组链接或ID"
               />
             </div>
             <div class="form-row">
-              <label class="form-label">频道 ID</label>
+            <label class="form-label" for="settings-tg-channel">频道 ID</label>
               <input
+                id="settings-tg-channel"
                 v-model="config.tg.channel"
                 class="input"
                 placeholder="频道链接或ID"
               />
             </div>
             <div class="form-row path-row">
-              <label class="form-label">下载目录</label>
+            <label class="form-label" for="settings-tg-download-dir">下载目录</label>
               <div class="path-input-row">
                 <input
+                  id="settings-tg-download-dir"
                   v-model="config.paths.tgDownloadDir"
                   class="input"
                   placeholder="选择TG打包下载目录"
@@ -364,11 +382,11 @@
 
       <!-- ASMR 设置 -->
       <div class="section card">
-        <div class="section-header" @click="togglePanel('asmr')">
+        <button type="button" class="section-header" :aria-expanded="expandedPanels.asmr" aria-controls="settings-asmr" @click="togglePanel('asmr')">
           <span class="section-icon">
-            <n-icon :size="20">
+            <span class="icon-size-20">
               <Globe24Regular />
-            </n-icon>
+            </span>
           </span>
           <div class="section-head-copy">
             <h3 class="section-title">ASMR.ONE</h3>
@@ -378,56 +396,61 @@
           </div>
           <div class="section-head-side">
             <span class="section-meta"
-              >{{ asmrLoggedIn ? "已登录" : "待登录" }} ?
+              >{{ asmrLoggedIn ? "已登录" : "待登录" }} ·
               {{ config.asmr.username || "未填写账号" }}</span
             >
             <span class="expand-icon">{{
               expandedPanels.asmr ? "-" : "+"
             }}</span>
           </div>
-        </div>
-        <div v-show="expandedPanels.asmr" class="section-body">
+        </button>
+        <div id="settings-asmr" v-show="expandedPanels.asmr" class="section-body">
           <div class="form-grid">
             <div class="form-row">
-              <label class="form-label">用户名</label>
+              <label class="form-label" for="settings-asmr-username">用户名</label>
               <input
+                id="settings-asmr-username"
                 v-model="config.asmr.username"
                 class="input"
                 placeholder="用户名或邮箱"
               />
             </div>
             <div class="form-row">
-              <label class="form-label">密码</label>
+              <label class="form-label" for="settings-asmr-password">密码</label>
               <div class="password-wrap">
                 <input
-                  v-model="config.asmr.password"
+                  id="settings-asmr-password"
+                  v-model="asmrPasswordInput"
                   :type="showAsmrPassword ? 'text' : 'password'"
                   class="input"
-                  placeholder="密码"
+                  :placeholder="asmrPasswordIsSet ? '密码已保存；输入新密码可替换' : '密码'"
                 />
                 <button
                   class="toggle-btn"
+                  :aria-label="showAsmrPassword ? '隐藏密码' : '显示密码'"
                   @click="showAsmrPassword = !showAsmrPassword"
                 >
-                  <n-icon :size="16">
+                  <span class="icon-size-16">
                     <component
                       :is="showAsmrPassword ? EyeOff24Regular : Eye24Regular"
                     />
-                  </n-icon>
+                  </span>
                 </button>
               </div>
             </div>
             <div class="form-row">
-              <label class="form-label">播放列表 ID</label>
+              <label class="form-label" for="settings-asmr-playlist">播放列表 ID</label>
               <input
+                id="settings-asmr-playlist"
                 v-model="config.asmr.playlistId"
                 class="input"
                 placeholder="a7868acf-..."
               />
             </div>
             <div class="form-row">
-              <label class="form-label">待翻译队列 ID</label>
+              <label class="form-label" for="settings-asmr-translation-queue">待翻译队列 ID</label>
               <input
+                id="settings-asmr-translation-queue"
                 v-model="config.asmr.translationQueuePlaylistId"
                 class="input"
                 placeholder="ea05fd39-..."
@@ -455,11 +478,11 @@
 
       <!-- 系统配置 -->
       <div class="section card">
-        <div class="section-header" @click="togglePanel('systemConfig')">
+        <button type="button" class="section-header" :aria-expanded="expandedPanels.systemConfig" aria-controls="settings-system" @click="togglePanel('systemConfig')">
           <span class="section-icon">
-            <n-icon :size="20">
+            <span class="icon-size-20">
               <Settings24Regular />
-            </n-icon>
+            </span>
           </span>
           <div class="section-head-copy">
             <h3 class="section-title">系统配置</h3>
@@ -474,7 +497,7 @@
                   ? "自定义窗口"
                   : "系统边框"
               }}
-              ?
+              ·
               {{
                 config.system.theme === "dark"
                   ? "暗色"
@@ -487,11 +510,11 @@
               expandedPanels.systemConfig ? "-" : "+"
             }}</span>
           </div>
-        </div>
-        <div v-show="expandedPanels.systemConfig" class="section-body">
+        </button>
+        <div id="settings-system" v-show="expandedPanels.systemConfig" class="section-body">
           <div class="form-row">
-            <label class="form-label">窗口边框模式</label>
-            <select v-model="config.system.windowFrameMode" class="select">
+            <label class="form-label" for="settings-window-frame">窗口边框模式</label>
+            <select id="settings-window-frame" v-model="config.system.windowFrameMode" class="select">
               <option value="custom">无边框（Windows 推荐）</option>
               <option value="system">系统边框（兼容）</option>
             </select>
@@ -500,10 +523,11 @@
             >
           </div>
           <div class="form-row">
-            <label class="form-label">明暗模式</label>
+            <label class="form-label" for="settings-theme">明暗模式</label>
             <select
+              id="settings-theme"
               v-model="config.system.theme"
-              class="select"
+                class="select"
               @change="saveAllSettings"
             >
               <option value="auto">跟随系统</option>
@@ -515,15 +539,9 @@
             >
           </div>
           <div class="form-row">
-            <label class="form-label">主色调</label>
+            <label class="form-label" for="settings-accent-color">主色调</label>
             <div class="color-input-wrap">
-              <n-color-picker
-                v-model:value="config.system.accentColor"
-                class="accent-picker"
-                :show-alpha="false"
-                :modes="['hex']"
-                @update:value="saveAllSettings"
-              />
+              <input id="settings-accent-color" v-model="config.system.accentColor" type="color" class="accent-picker" @change="saveAllSettings" />
               <input
                 v-model="config.system.accentColor"
                 class="input"
@@ -533,71 +551,32 @@
             </div>
           </div>
           <div class="form-row">
-            <label class="form-label">窗口透明度</label>
+            <label class="form-label" for="settings-window-opacity">窗口透明度</label>
             <div class="range-row">
               <input
+                id="settings-window-opacity"
                 v-model.number="config.system.windowOpacity"
                 type="range"
                 min="0.55"
                 max="1"
                 step="0.01"
                 class="range-input"
-                @input="saveAllSettings"
+                @input="previewWindowOpacity"
+                @change="saveAllSettings"
               />
               <span class="range-value">
                 {{
                   Math.round(
-                    (Number(config.system.windowOpacity || 0.92) || 0.92) * 100,
+                    (Number(config.system.windowOpacity || 1) || 1) * 100,
                   )
                 }}%
               </span>
             </div>
           </div>
           <div class="form-row">
-            <div class="toggle-row">
-              <span class="toggle-label">启用毛玻璃</span>
-              <input
-                v-model="config.system.blurEnabled"
-                class="toggle"
-                type="checkbox"
-                @change="saveAllSettings"
-              />
-            </div>
-          </div>
-          <div v-if="config.system.blurEnabled" class="form-row">
-            <label class="form-label">毛玻璃强度</label>
-            <div class="range-row">
-              <input
-                v-model.number="config.system.blurIntensity"
-                type="range"
-                min="0"
-                max="40"
-                step="1"
-                class="range-input"
-                @input="saveAllSettings"
-              />
-              <span class="range-value"
-                >{{ Number(config.system.blurIntensity || 8) }}px</span
-              >
-            </div>
-          </div>
-          <div v-if="config.system.blurEnabled" class="form-row">
-            <label class="form-label">毛玻璃渲染模式</label>
-            <select
-              v-model="config.system.blurRenderMode"
-              class="select"
-              @change="saveAllSettings"
-            >
-              <option value="system">系统渲染（Windows Acrylic）</option>
-              <option value="gpu">显卡渲染（GPU Backdrop）</option>
-            </select>
-            <span class="form-hint"
-              >系统模式更接近 Win10 原生；GPU 模式更柔和、跨主题一致。</span
-            >
-          </div>
-          <div class="form-row">
-            <label class="form-label">代理地址（全局）</label>
+            <label class="form-label" for="settings-proxy-url">代理地址（全局）</label>
             <input
+              id="settings-proxy-url"
               v-model="config.system.proxyUrl"
               class="input"
               placeholder="例如: http://127.0.0.1:7890（留空表示不覆盖模块代理）"
@@ -608,9 +587,10 @@
             >
           </div>
           <div class="form-row">
-            <label class="form-label">日志目录</label>
+            <label class="form-label" for="settings-log-dir">日志目录</label>
             <div class="path-input-wrap">
               <input
+                id="settings-log-dir"
                 v-model="config.paths.logsDir"
                 class="input"
                 placeholder="日志目录"
@@ -621,9 +601,10 @@
             </div>
           </div>
           <div class="form-row">
-            <label class="form-label">配置文件夹</label>
+            <label class="form-label" for="settings-config-dir">配置文件夹</label>
             <div class="path-input-wrap">
               <input
+                id="settings-config-dir"
                 v-model="config.paths.configDir"
                 class="input"
                 placeholder="配置文件所在文件夹"
@@ -648,16 +629,24 @@
     </transition>
 
     <!-- 验证码弹窗 -->
-    <div v-if="showTgAuthModal" class="modal-mask">
-      <div class="modal-box card">
-        <h3>{{ tgAuthType === "Password" ? "二级密码" : "验证码" }}</h3>
+    <div v-if="showTgAuthModal" class="modal-mask" @keydown.esc="cancelTgAuth">
+      <div class="modal-box card" role="dialog" aria-modal="true" aria-labelledby="tg-auth-title" @keydown.tab="trapAuthFocus" @click.stop>
+        <h3 id="tg-auth-title">{{ tgAuthType === "Password" ? "二级密码" : "验证码" }}</h3>
         <p>
-          请输入发送到你手机/客户端的{{
-            tgAuthType === "Password" ? "两步验证密码" : "5位数字"
+          请输入发送到
+          {{
+            tgAuthType === "Password"
+              ? "你设置的两步验证密码"
+              : tgAuthDelivery === "app"
+                ? "Telegram 客户端的 5 位数字"
+                : "Telegram 指定的手机验证渠道（短信/来电等）"
           }}
         </p>
         <input
           v-model="tgAuthCode"
+          id="tg-auth-code"
+          :aria-label="tgAuthType === 'Password' ? '二级密码' : '验证码'"
+          ref="authCodeInput"
           class="input big-input"
           @keyup.enter="submitTgAuth"
         />
@@ -671,8 +660,8 @@
 </template>
 
 <script setup>
-import { inject } from "vue";
-import { NColorPicker, NIcon } from "naive-ui";
+import { inject, watch } from "vue";
+
 import {
   Airplane24Regular,
   Eye24Regular,
@@ -686,6 +675,7 @@ import { useSettingsAuthFlows } from "../../composables/useSettingsAuthFlows";
 import { useSettingsConfigState } from "../../composables/useSettingsConfigState";
 import { useSettingsUiState } from "../../composables/useSettingsUiState";
 import { useSettingsInitialization } from "../../composables/useSettingsInitialization";
+import { setWindowOpacity } from "../../api/systemApi";
 
 const {
   isTgLogging,
@@ -695,17 +685,32 @@ const {
   showAsmrPassword,
   tgAuthCode,
   tgAuthType,
+  tgAuthDelivery,
   showTgAuthModal,
+  authCodeInput,
+  focusAuthInput,
+  restoreAuthFocus,
   expandedPanels,
   togglePanel,
 } = useSettingsUiState();
 
 // 注入待处理的验证码数据（从 App.vue）
 const pendingAuthData = inject("pendingAuthData", null);
+const trapAuthFocus = (event) => {
+  if (event.shiftKey && document.activeElement === authCodeInput.value) {
+    event.preventDefault();
+    event.currentTarget.querySelector(".modal-actions button:last-child")?.focus();
+  } else if (!event.shiftKey && document.activeElement === event.currentTarget.querySelector(".modal-actions button:last-child")) {
+    event.preventDefault();
+    authCodeInput.value?.focus?.();
+  }
+};
 
 const {
   tgConnected,
   asmrLoggedIn,
+  asmrPasswordInput,
+  asmrPasswordIsSet,
   showToast,
   toastMessage,
   toastType,
@@ -734,6 +739,8 @@ const {
   cancelTgAuth,
 } = useSettingsAuthFlows({
   config,
+  asmrPasswordInput,
+  asmrPasswordIsSet,
   tgConnected,
   asmrLoggedIn,
   isTgLogging,
@@ -745,11 +752,21 @@ const {
   saveAllSettings,
 });
 
+watch(showTgAuthModal, (open) => {
+  if (open) focusAuthInput();
+  else restoreAuthFocus();
+});
+
+const previewWindowOpacity = () => {
+  setWindowOpacity(config.system.windowOpacity).catch?.(() => {});
+};
+
 useSettingsInitialization({
   initializeBaseSettings,
   pendingAuthData,
   tgConnected,
   tgAuthType,
+  tgAuthDelivery,
   showTgAuthModal,
   tgAuthCode,
 });

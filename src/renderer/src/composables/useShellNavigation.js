@@ -1,4 +1,4 @@
-import { ref, computed, watch } from "vue";
+import { ref, computed, watch, onMounted, onBeforeUnmount } from "vue";
 
 export const useShellNavigation = ({
   currentView,
@@ -58,10 +58,21 @@ export const useShellNavigation = ({
     return map;
   });
 
+  const isItemVisibleInExpandedGroup = (item) => {
+    if (!item || item.groupKey === "standalone") return false;
+    const group = menuGroups.find((candidate) => candidate.key === item.groupKey);
+    if (!group) return false;
+    if (group.items.some((groupItem) => groupItem.key === item.key)) {
+      return Boolean(expandedGroups.value[group.key]);
+    }
+    return Boolean(expandedGroups.value[group.key]);
+  };
+
   const recentMenuItems = computed(() =>
     recentViewKeys.value
       .map((key) => viewMetaMap.value[key])
       .filter(Boolean)
+      .filter((item) => item.groupKey === "standalone" || !isItemVisibleInExpandedGroup(item))
       .slice(0, recentLimit),
   );
 
@@ -195,15 +206,22 @@ export const useShellNavigation = ({
     { immediate: true },
   );
 
-  const handleMenuClick = (key) => {
-    currentView.value = key;
-    ensureGroupExpandedByView(key);
-
+  const handleMenuClick = (key, options = {}) => {
     if (key === "clean") {
       expandedSubmenu.value =
         expandedSubmenu.value === "clean" ? null : "clean";
       return;
     }
+    if (!viewMetaMap.value[key] && !["local-clean", "cloud-clean"].includes(key)) {
+      return;
+    }
+    currentView.value = key;
+    if (typeof window !== "undefined" && options.history !== false) {
+      const url = new URL(window.location.href);
+      url.searchParams.set("view", key);
+      window.history.pushState({ view: key }, "", url);
+    }
+    ensureGroupExpandedByView(key);
 
     if (["local-clean", "cloud-clean"].includes(key)) {
       expandedSubmenu.value = "clean";
@@ -212,6 +230,20 @@ export const useShellNavigation = ({
 
     expandedSubmenu.value = null;
   };
+
+  const handlePopState = () => {
+    const key = new URLSearchParams(window.location.search).get("view") || "home";
+    currentView.value =
+      viewMetaMap.value[key] ||
+      key === "home" ||
+      ["local-clean", "cloud-clean"].includes(key)
+        ? key
+        : "home";
+    ensureGroupExpandedByView(currentView.value);
+  };
+
+  onMounted(() => window.addEventListener("popstate", handlePopState));
+  onBeforeUnmount(() => window.removeEventListener("popstate", handlePopState));
 
   return {
     expandedSubmenu,

@@ -1,19 +1,23 @@
 import { ref, reactive, watch } from "vue";
 import { loadConfig, saveConfig } from "../api/configApi";
 import { tgCheckLogin } from "../api/tgApi";
+import { asmrCheckLogin } from "../api/asmrApi";
+import { createDefaultConfig } from "../../../shared/config-contract.mjs";
 
-const DEFAULT_BOT_SEARCH_LIMIT = 3000;
+const SETTINGS_DEFAULTS = createDefaultConfig();
+const DEFAULT_BOT_SEARCH_LIMIT = SETTINGS_DEFAULTS.tg.botSearchLimit;
 const MIN_BOT_SEARCH_LIMIT = 100;
-const DEFAULT_INFO_CACHE_MAX_FILE_SIZE_MB = 50;
+const DEFAULT_INFO_CACHE_MAX_FILE_SIZE_MB =
+  SETTINGS_DEFAULTS.tg.infoCacheMaxFileSizeMB;
 const MIN_INFO_CACHE_MAX_FILE_SIZE_MB = 1;
 const MAX_INFO_CACHE_MAX_FILE_SIZE_MB = 4096;
-const DEFAULT_WINDOW_OPACITY = 0.92;
+const DEFAULT_WINDOW_OPACITY = SETTINGS_DEFAULTS.system.windowOpacity;
 const MIN_WINDOW_OPACITY = 0.55;
 const MAX_WINDOW_OPACITY = 1;
-const DEFAULT_BLUR_INTENSITY = 8;
+const DEFAULT_BLUR_INTENSITY = SETTINGS_DEFAULTS.system.blurIntensity;
 const MAX_BLUR_INTENSITY = 40;
-const DEFAULT_BLUR_RENDER_MODE = "system";
-const DEFAULT_ACCENT_COLOR = "#adb571";
+const DEFAULT_BLUR_RENDER_MODE = SETTINGS_DEFAULTS.system.blurRenderMode;
+const DEFAULT_ACCENT_COLOR = SETTINGS_DEFAULTS.system.accentColor;
 
 const normalizeThemeMode = (rawValue) => {
   const mode = String(rawValue || "auto")
@@ -79,79 +83,18 @@ const normalizeProxyUrl = (rawValue) => {
 export const useSettingsConfigState = () => {
   const tgConnected = ref(false);
   const asmrLoggedIn = ref(false);
+  const asmrPasswordInput = ref("");
+  const asmrPasswordIsSet = ref(false);
   const showToast = ref(false);
   const toastMessage = ref("");
   const toastType = ref("success");
 
   const config = reactive({
+    ...SETTINGS_DEFAULTS,
     tg: {
-      botToken: "",
-      botMode: "polling",
-      botWebhookUrl: "",
-      botWebhookPort: 8443,
-      searchChannelId: "",
-      prePackagePath: "",
-      prePackageLink: "",
+      ...SETTINGS_DEFAULTS.tg,
       botAllowedUsers: "",
       botAllowedChats: "",
-      botWhitelistDebugLog: false,
-      botSearchLimit: 3000,
-      botHistoryPath: "",
-      botAutoStartOnStartup: true,
-      infoCacheMaxFileSizeMB: DEFAULT_INFO_CACHE_MAX_FILE_SIZE_MB,
-      proxyUrl: "",
-      apiId: "",
-      apiHash: "",
-      phone: "",
-      session: "",
-      discussion: "",
-      channel: "",
-    },
-    asmr: {
-      username: "",
-      password: "",
-      token: "",
-      playlistId: "",
-      translationQueuePlaylistId: "",
-      rememberMe: false,
-      proxyUrl: "",
-    },
-    paths: {
-      configDir: "",
-      logsDir: "",
-      sourceDir: "",
-      toolOutputDir: "",
-      whisperTargetPath: "",
-      dataDir: "",
-      configFilePath: "",
-      chineseListPath: "",
-      tgDownloadDir: "",
-    },
-    upload: { channelId: "" },
-    translationAutomation: {
-      enabled: false,
-      runOnStartup: true,
-      scanIntervalMs: 1800000,
-      maxWorksPerCycle: 3,
-      includeTags: [],
-      excludeTags: [],
-      requireAllIncludeTags: false,
-      startHour: 1,
-      endHour: 7,
-      cleanupLocalAfterUpload: true,
-    },
-    logging: { level: "info", enableFileLog: true },
-    system: {
-      theme: "auto",
-      autoStart: false,
-      minimizeToTray: false,
-      windowFrameMode: "custom",
-      proxyUrl: "",
-      windowOpacity: DEFAULT_WINDOW_OPACITY,
-      blurEnabled: true,
-      blurIntensity: DEFAULT_BLUR_INTENSITY,
-      blurRenderMode: DEFAULT_BLUR_RENDER_MODE,
-      accentColor: DEFAULT_ACCENT_COLOR,
     },
   });
 
@@ -279,6 +222,11 @@ export const useSettingsConfigState = () => {
   };
 
   let lastSavedSignature = "";
+  // Secret fields are kept out of the normal settings signature, but must be
+  // sent to Main once when the user enters or changes them.
+  let lastSavedCredentialSignature = "";
+  let saveInFlight = null;
+  let pendingSave = false;
 
   const buildNormalizedPayload = () => {
     const tgSettings = {
@@ -305,7 +253,7 @@ export const useSettingsConfigState = () => {
       theme: normalizeThemeMode(config.system.theme),
       proxyUrl: normalizeProxyUrl(config.system.proxyUrl),
       windowOpacity: normalizeWindowOpacity(config.system.windowOpacity),
-      blurEnabled: toSafeBoolean(config.system.blurEnabled, true),
+      blurEnabled: toSafeBoolean(config.system.blurEnabled, false),
       blurIntensity: normalizeBlurIntensity(config.system.blurIntensity),
       blurRenderMode: normalizeBlurRenderMode(config.system.blurRenderMode),
       accentColor: normalizeAccentColor(config.system.accentColor),
@@ -325,25 +273,74 @@ export const useSettingsConfigState = () => {
   };
 
   const saveAllSettings = async () => {
+    if (saveInFlight) {
+      pendingSave = true;
+      return saveInFlight;
+    }
+
     try {
       // 使用归一化快照去重，避免“保存导致 watch 再保存”的循环。
       const settingsToSave = buildNormalizedPayload();
+      const credentialPatch = {};
+      for (const key of ["apiHash", "session", "botToken"]) {
+        const value = settingsToSave.tg?.[key];
+        if (
+          typeof value === "string" &&
+          value.trim() &&
+          value !== "[REDACTED]" &&
+          value !== "[redacted]"
+        ) {
+          credentialPatch[key] = value;
+        }
+      }
+      // Credentials are owned by the main-process credential store, never by
+      // the renderer's persisted settings payload. They are included in the
+      // IPC request below only when the user supplied a new value.
+      if (settingsToSave.asmr) {
+        delete settingsToSave.asmr.password;
+        delete settingsToSave.asmr.token;
+      }
+      if (settingsToSave.tg) {
+        delete settingsToSave.tg.apiHash;
+        delete settingsToSave.tg.session;
+        delete settingsToSave.tg.botToken;
+      }
       const nextSignature = JSON.stringify(settingsToSave);
-      if (nextSignature === lastSavedSignature) {
+      const credentialSignature = JSON.stringify(credentialPatch);
+      const shouldSaveCredentials =
+        Object.keys(credentialPatch).length > 0 &&
+        credentialSignature !== lastSavedCredentialSignature;
+      if (nextSignature === lastSavedSignature && !shouldSaveCredentials) {
         return;
       }
 
-      const result = await saveConfig(settingsToSave);
+      const savePayload = shouldSaveCredentials
+        ? {
+            ...settingsToSave,
+            tg: { ...settingsToSave.tg, ...credentialPatch },
+          }
+        : settingsToSave;
+      saveInFlight = saveConfig(savePayload);
+      const result = await saveInFlight;
       const isSuccess = result && (result.success === true || result === true);
 
       if (isSuccess) {
         lastSavedSignature = nextSignature;
+        if (shouldSaveCredentials) {
+          lastSavedCredentialSignature = credentialSignature;
+        }
         showToastMessage("设置已保存", "success");
       } else {
         showToastMessage("保存失败: 未知错误", "error");
       }
     } catch (error) {
       showToastMessage("保存失败: " + error.message, "error");
+    } finally {
+      saveInFlight = null;
+      if (pendingSave) {
+        pendingSave = false;
+        queueMicrotask(() => saveAllSettings());
+      }
     }
   };
 
@@ -393,6 +390,9 @@ export const useSettingsConfigState = () => {
         // 首次加载时统一做字段合并与类型归一化，兼容旧配置格式。
         if (cfg.tg) {
           config.tg = { ...config.tg, ...cfg.tg };
+          config.tg.apiHash = "";
+          config.tg.session = "";
+          config.tg.botToken = "";
           config.tg.botAllowedUsers = formatIdListForInput(
             config.tg.botAllowedUsers,
           );
@@ -418,11 +418,25 @@ export const useSettingsConfigState = () => {
             config.tg.infoCacheMaxFileSizeMB,
           );
           config.tg.botMode = config.tg.botMode || "polling";
-          console.log("Settings: tg 更新后:", config.tg);
+          const safeTelegramConfig = {
+            ...config.tg,
+            apiHash: "[redacted]",
+            session: "[redacted]",
+            botToken: "[redacted]",
+          };
+          console.log("Settings: tg 更新后:", safeTelegramConfig);
         }
         if (cfg.asmr) {
           config.asmr = { ...config.asmr, ...cfg.asmr };
-          console.log("Settings: asmr 更新后:", config.asmr);
+          asmrPasswordIsSet.value = Boolean(cfg.asmr.password);
+          config.asmr.password = "";
+          config.asmr.token = "";
+          asmrPasswordInput.value = "";
+          console.log("Settings: asmr 更新后:", {
+            ...config.asmr,
+            password: "[redacted]",
+            token: "[redacted]",
+          });
         }
         if (cfg.paths) {
           config.paths = { ...config.paths, ...cfg.paths };
@@ -441,7 +455,7 @@ export const useSettingsConfigState = () => {
           );
           config.system.blurEnabled = toSafeBoolean(
             config.system.blurEnabled,
-            true,
+            false,
           );
           config.system.blurIntensity = normalizeBlurIntensity(
             config.system.blurIntensity,
@@ -466,11 +480,21 @@ export const useSettingsConfigState = () => {
         }
         // 初始化后写入当前签名，避免刚加载就被自动保存再次落盘。
         lastSavedSignature = JSON.stringify(buildNormalizedPayload());
-        console.log("Settings: 配置加载完成，当前 config:", config);
+        const safeConfig = JSON.parse(JSON.stringify(config));
+        if (safeConfig.asmr) {
+          safeConfig.asmr.password = safeConfig.asmr.password ? "[set]" : "";
+          safeConfig.asmr.token = safeConfig.asmr.token ? "[set]" : "";
+        }
+        if (safeConfig.tg) {
+          safeConfig.tg.apiHash = safeConfig.tg.apiHash ? "[set]" : "";
+          safeConfig.tg.session = safeConfig.tg.session ? "[set]" : "";
+          safeConfig.tg.botToken = safeConfig.tg.botToken ? "[set]" : "";
+        }
+        console.log("Settings: 配置加载完成，当前 config:", safeConfig);
       }
 
       tgConnected.value = await tgCheckLogin();
-      asmrLoggedIn.value = !!config.asmr.token;
+      asmrLoggedIn.value = await asmrCheckLogin();
       console.log(
         "Settings: 登录状态 - TG:",
         tgConnected.value,
@@ -485,6 +509,8 @@ export const useSettingsConfigState = () => {
   return {
     tgConnected,
     asmrLoggedIn,
+    asmrPasswordInput,
+    asmrPasswordIsSet,
     showToast,
     toastMessage,
     toastType,

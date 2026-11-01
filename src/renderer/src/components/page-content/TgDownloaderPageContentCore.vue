@@ -1,7 +1,9 @@
 <template>
   <div class="tg-downloader">
     <div class="download-header">
-      <h2>📦 TG打包下载</h2>
+      <p class="page-eyebrow">Telegram / 文件任务</p>
+      <h1>TG 打包下载</h1>
+      <p class="download-subtitle">筛选待下载文件，确认范围后提交批量任务。</p>
     </div>
 
     <div class="download-content">
@@ -30,7 +32,7 @@
           @update:concurrent-count="concurrentCount = $event"
         />
 
-        <div class="files-list">
+        <div v-if="displayedFiles.length" class="files-list">
           <div
             v-for="file in displayedFiles"
             :key="file.id"
@@ -40,6 +42,12 @@
               skipped: skippedFileIds.has(file.id),
             }"
             @click="toggleSelect(file.id)"
+            @keydown.enter.prevent="!skippedFileIds.has(file.id) && toggleSelect(file.id)"
+            @keydown.space.prevent="!skippedFileIds.has(file.id) && toggleSelect(file.id)"
+            role="checkbox"
+            :tabindex="skippedFileIds.has(file.id) ? -1 : 0"
+            :aria-checked="selectedFiles.includes(file.id)"
+            :aria-disabled="skippedFileIds.has(file.id)"
           >
             <input
               type="checkbox"
@@ -56,6 +64,10 @@
               >跳过</span
             >
           </div>
+        </div>
+        <div v-else class="files-empty" role="status">
+          <p>暂无待下载文件</p>
+          <span>请先清除缓存并重新扫描，或关闭过滤后重新加载。</span>
         </div>
 
         <!-- 分页 -->

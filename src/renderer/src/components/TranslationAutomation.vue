@@ -2,7 +2,7 @@
   <div class="automation-page">
     <header class="automation-hero">
       <div>
-        <p class="eyebrow">AUTOMATION CONTROL ROOM</p>
+        <p class="eyebrow">任务处理 / 自动翻译</p>
         <h1>自动翻译队列</h1>
         <p class="hero-copy">
           从 ASMR.ONE 发现作品，在低峰时间完成下载、翻译、打包和 Telegram 发布。
@@ -13,16 +13,23 @@
           <i class="status-dot" />
           {{ statusLabel }}
         </span>
-        <button class="primary-button" :disabled="running" @click="runNow">
+        <button type="button" class="primary-button" :disabled="running" :aria-busy="running" @click="runNow">
           {{ running ? "执行中..." : "立即运行一轮" }}
+        </button>
+        <button
+          v-if="runtimeStatus.step === 'error' && !running"
+          class="secondary-button retry-button"
+          @click="runNow"
+        >
+          重试本轮
         </button>
       </div>
     </header>
 
-    <section class="stage-card">
+    <section class="stage-card" role="status" aria-live="polite" :aria-busy="running">
       <div class="stage-card-header">
         <div>
-          <p class="section-kicker">LIVE PIPELINE</p>
+        <p class="section-kicker">运行阶段</p>
           <h2>{{ runtimeStatus.message }}</h2>
         </div>
         <span v-if="runtimeStatus.currentCode" class="code-badge">
@@ -53,15 +60,20 @@
           下次探测 {{ formatTime(runtimeStatus.nextProbeAt) }}
         </span>
       </div>
+      <p v-if="runtimeStatus.step === 'error'" class="runtime-error" role="alert">
+        {{ runtimeStatus.message || "任务失败，请重试" }}
+      </p>
 
       <section
         v-if="hasTranslationProgress"
         class="translation-progress"
         aria-label="本轮翻译清单"
+        role="region"
+        aria-live="off"
       >
         <div class="translation-progress-heading">
           <div>
-            <p class="section-kicker">TRANSLATION QUEUE</p>
+            <p class="section-kicker">翻译队列</p>
             <h3>本轮翻译清单</h3>
           </div>
           <span class="translation-total"> {{ translationTotal }} 个作品 </span>
@@ -176,13 +188,15 @@
       <section class="panel settings-panel">
         <div class="panel-heading">
           <div>
-            <p class="section-kicker">SCHEDULE</p>
+            <p class="section-kicker">调度设置</p>
             <h2>运行策略</h2>
           </div>
-          <label class="switch">
+          <label class="switch" for="translation-enabled">
             <input
+              id="translation-enabled"
               v-model="config.enabled"
               type="checkbox"
+              aria-label="启用自动翻译调度"
               @change="saveSettings"
             />
             <span />
@@ -304,7 +318,8 @@
           </label>
         </div>
         <button
-          class="secondary-button"
+          type="button"
+          class="secondary-button save-button"
           :disabled="savingSettings"
           @click="saveSettings"
         >
@@ -322,7 +337,7 @@
       <section class="panel summary-panel">
         <div class="panel-heading">
           <div>
-            <p class="section-kicker">LAST RUN</p>
+            <p class="section-kicker">最近一轮</p>
             <h2>最近一轮</h2>
           </div>
           <span class="run-time">{{ lastRunTime }}</span>
@@ -360,12 +375,12 @@
     <section class="panel log-panel">
       <div class="panel-heading">
         <div>
-          <p class="section-kicker">EVENT STREAM</p>
+          <p class="section-kicker">运行日志</p>
           <h2>运行日志</h2>
         </div>
         <button class="text-button" @click="logs = []">清空</button>
       </div>
-      <div class="log-list">
+      <div class="log-list" aria-live="polite" aria-relevant="additions text">
         <div v-if="!logs.length" class="empty-log">等待自动任务事件...</div>
         <div
           v-for="(log, index) in logs"
@@ -382,6 +397,13 @@
 
 <script setup>
 import { computed, onMounted, onUnmounted, ref } from "vue";
+import {
+  onTranslationAutomationEvent,
+  runTranslationAutomation,
+  saveTranslationAutomationConfig,
+  translationAutomationStatus,
+} from "../api/configApi";
+import { CONFIG_DEFAULTS } from "../../../shared/config-contract.mjs";
 
 const stages = [
   { key: "scan", label: "发现", number: "01" },
@@ -393,19 +415,7 @@ const stages = [
   { key: "cleanup", label: "清理", number: "07" },
 ];
 
-const defaultConfig = {
-  enabled: false,
-  runOnStartup: true,
-  scanIntervalMs: 30 * 60 * 1000,
-  maxWorksPerCycle: 3,
-  maxDownloadTasksPerWork: 200,
-  aria2RestartMaxAttempts: 3,
-  aria2RestartCooldownMs: 5 * 60 * 1000,
-  aria2EarlyRetryPercent: 80,
-  startHour: 1,
-  endHour: 7,
-  cleanupLocalAfterUpload: true,
-};
+const defaultConfig = CONFIG_DEFAULTS.translationAutomation;
 
 const config = ref({ ...defaultConfig });
 const excludeTagsText = ref("");
@@ -572,7 +582,7 @@ const applyStatus = (payload = {}) => {
 };
 
 const loadStatus = async () => {
-  const result = await window.api.translationAutomation.status();
+  const result = await translationAutomationStatus();
   if (result?.success) applyStatus(result.data);
 };
 
@@ -593,7 +603,7 @@ const saveSettings = async () => {
         excludeTags,
       }),
     );
-    const result = await window.api.translationAutomation.saveConfig(payload);
+    const result = await saveTranslationAutomationConfig(payload);
     if (!result?.success) {
       throw new Error(result?.error || "主进程未能写入配置文件");
     }
@@ -621,7 +631,7 @@ const saveSettings = async () => {
 const runNow = async () => {
   running.value = true;
   try {
-    const result = await window.api.translationAutomation.run();
+    const result = await runTranslationAutomation();
     applyStatus(result);
   } catch (error) {
     runtimeStatus.value = {
@@ -636,7 +646,7 @@ const runNow = async () => {
 
 onMounted(async () => {
   await loadStatus();
-  unsubscribe = window.api.translationAutomation.onEvent((payload) => {
+  unsubscribe = onTranslationAutomationEvent((payload) => {
     applyStatus(payload);
   });
 });
@@ -883,6 +893,11 @@ h2 {
 }
 .stage-detail strong {
   color: var(--ink);
+}
+.runtime-error {
+  margin: 0.6rem 0 0;
+  color: #a3483b;
+  font-size: 0.8rem;
 }
 .translation-progress {
   margin-top: 1rem;

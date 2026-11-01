@@ -1,9 +1,4 @@
 <template>
-  <n-config-provider :theme-overrides="themeOverrides">
-    <n-loading-bar-provider>
-      <n-message-provider>
-        <n-notification-provider>
-          <n-dialog-provider>
             <div
               class="app-shell"
               :class="[
@@ -52,11 +47,23 @@
               </div>
 
               <div class="app-layout">
+                <a class="skip-link" href="#main-content">跳转到主要内容</a>
                 <!-- 左侧导航 -->
-                <aside class="sidebar" :class="{ collapsed: sidebarCollapsed }">
+                <div v-if="sidebarOpen" class="sidebar-overlay" @click="closeSidebar" aria-hidden="true" />
+                <aside id="primary-navigation" class="sidebar" :class="{ collapsed: sidebarCollapsed, open: sidebarOpen }" aria-label="主导航" @keydown="handleSidebarKeydown">
                   <div class="sidebar-inner">
+                    <button
+                      v-if="isNarrowWindow"
+                      type="button"
+                      class="sidebar-close"
+                      aria-label="关闭主导航"
+                      @click="closeSidebar"
+                    >
+                      <span aria-hidden="true">×</span>
+                    </button>
                     <!-- Logo + 用户头像（可点击收起/展开） -->
-                    <div
+                    <button
+                      type="button"
                       class="logo"
                       title="点击收起/展开侧边栏"
                       @click="toggleSidebar"
@@ -71,7 +78,7 @@
                       <span v-if="!sidebarCollapsed" class="logo-text"
                         >KuruHaru</span
                       >
-                    </div>
+                    </button>
 
                     <!-- 导航菜单 -->
                     <nav class="nav-list">
@@ -81,36 +88,40 @@
                       >
                         <div class="nav-quick-title">最近访问</div>
                         <div class="nav-quick-items">
-                          <div
+                          <button
+                            type="button"
                             v-for="item in recentMenuItems"
                             :key="`recent-${item.key}`"
                             class="nav-item nav-item-quick"
                             :class="{ active: isActive(item.key) }"
+                            :aria-current="isActive(item.key) ? 'page' : undefined"
                             @click="handleMenuClick(item.key)"
                           >
-                            <n-icon class="nav-icon" :size="18">
+                            <span class="nav-icon">
                               <component :is="resolveNavIcon(item.icon)" />
-                            </n-icon>
+                            </span>
                             <span class="nav-text">{{ item.label }}</span>
-                          </div>
+                          </button>
                         </div>
                       </section>
 
                       <div class="nav-fixed-section">
-                        <div
+                        <button
+                          type="button"
                           v-for="item in standaloneMenuItems"
                           :key="item.key"
                           class="nav-item"
                           :class="{ active: isActive(item.key) }"
+                          :aria-current="isActive(item.key) ? 'page' : undefined"
                           @click="handleMenuClick(item.key)"
                         >
-                          <n-icon class="nav-icon" :size="18">
+                          <span class="nav-icon">
                             <component :is="resolveNavIcon(item.icon)" />
-                          </n-icon>
+                          </span>
                           <span v-if="!sidebarCollapsed" class="nav-text">{{
                             item.label
                           }}</span>
-                        </div>
+                        </button>
                       </div>
 
                       <template v-if="!sidebarCollapsed">
@@ -123,12 +134,14 @@
                             type="button"
                             class="nav-group-header"
                             :class="{ active: isGroupActive(group) }"
+                            :aria-expanded="isGroupExpanded(group.key)"
+                            :aria-controls="`nav-group-${group.key}`"
                             @click="toggleGroup(group.key)"
                           >
                             <span class="nav-group-label">
-                              <n-icon class="nav-group-icon" :size="18">
+                              <span class="nav-group-icon">
                                 <component :is="resolveNavIcon(group.icon)" />
-                              </n-icon>
+                              </span>
                               <span class="nav-group-title">{{
                                 group.label
                               }}</span>
@@ -142,23 +155,27 @@
                             <div
                               v-if="isGroupExpanded(group.key)"
                               class="nav-group-items"
+                              :id="`nav-group-${group.key}`"
                             >
                               <template
                                 v-for="item in group.items"
                                 :key="item.key"
                               >
-                                <div
+                                <button
+                                  type="button"
                                   class="nav-item"
                                   :class="{ active: isActive(item.key) }"
+                                  :aria-current="isActive(item.key) ? 'page' : undefined"
+                                  :aria-expanded="item.children?.length ? isSubmenuExpanded(item) : undefined"
                                   @click="handleMenuClick(item.key)"
                                 >
-                                  <n-icon class="nav-icon" :size="18">
+                                  <span class="nav-icon">
                                     <component
                                       :is="resolveNavIcon(item.icon)"
                                     />
-                                  </n-icon>
+                                  </span>
                                   <span class="nav-text">{{ item.label }}</span>
-                                </div>
+                                </button>
 
                                 <div
                                   v-if="
@@ -167,25 +184,26 @@
                                   "
                                   class="submenu-inline"
                                 >
-                                  <div
+                                  <button
+                                    type="button"
                                     v-for="child in item.children"
                                     :key="child.key"
                                     class="submenu-item"
                                     :class="{
                                       active: currentView === child.key,
                                     }"
+                                    :aria-current="currentView === child.key ? 'page' : undefined"
                                     @click.stop="handleMenuClick(child.key)"
                                   >
-                                    <n-icon
+                                    <span
                                       class="submenu-item-icon"
-                                      :size="18"
                                     >
                                       <component
                                         :is="resolveNavIcon(child.icon)"
                                       />
-                                    </n-icon>
+                                    </span>
                                     <span>{{ child.label }}</span>
-                                  </div>
+                                  </button>
                                 </div>
                               </template>
                             </div>
@@ -194,25 +212,24 @@
                       </template>
 
                       <template v-else>
-                        <n-popover
+                        <details
                           v-for="group in menuGroups"
                           :key="group.key"
-                          trigger="hover"
-                          placement="right-start"
-                          :show-arrow="false"
-                          :delay="80"
+                          class="nav-collapsed-group"
+                          :open="collapsedOpenGroup === group.key"
+                          :data-flyout-open="collapsedOpenGroup === group.key ? 'true' : 'false'"
                         >
-                          <template #trigger>
-                            <button
-                              type="button"
+                            <summary
                               class="nav-group-pill"
                               :class="{ active: isGroupActive(group) }"
+                              :aria-label="group.label"
+                              :aria-expanded="collapsedOpenGroup === group.key"
+                              @click.prevent="toggleCollapsedGroup(group.key)"
                             >
-                              <n-icon class="nav-group-icon" :size="18">
+                              <span class="nav-group-icon">
                                 <component :is="resolveNavIcon(group.icon)" />
-                              </n-icon>
-                            </button>
-                          </template>
+                              </span>
+                            </summary>
 
                           <div class="group-flyout">
                             <div class="group-flyout-title">
@@ -223,85 +240,83 @@
                                 v-for="item in group.items"
                                 :key="item.key"
                               >
-                                <div
+                                <button
+                                  type="button"
                                   class="submenu-item"
                                   :class="{ active: isActive(item.key) }"
-                                  @click.stop="handleMenuClick(item.key)"
+                                  :aria-current="isActive(item.key) ? 'page' : undefined"
+                                  @click.stop="handleCollapsedMenuClick(item.key, group.key)"
                                 >
-                                  <n-icon class="submenu-item-icon" :size="18">
+                                  <span class="submenu-item-icon">
                                     <component
                                       :is="resolveNavIcon(item.icon)"
                                     />
-                                  </n-icon>
+                                  </span>
                                   <span>{{ item.label }}</span>
-                                </div>
+                                </button>
 
                                 <div
                                   v-if="item.children?.length"
                                   class="group-flyout-children"
                                 >
-                                  <div
+                                  <button
+                                    type="button"
                                     v-for="child in item.children"
                                     :key="child.key"
                                     class="submenu-item submenu-item-child"
                                     :class="{
                                       active: currentView === child.key,
                                     }"
-                                    @click.stop="handleMenuClick(child.key)"
+                                    :aria-current="currentView === child.key ? 'page' : undefined"
+                                    @click.stop="handleCollapsedMenuClick(child.key, group.key)"
                                   >
-                                    <n-icon
+                                    <span
                                       class="submenu-item-icon"
-                                      :size="18"
                                     >
                                       <component
                                         :is="resolveNavIcon(child.icon)"
                                       />
-                                    </n-icon>
+                                    </span>
                                     <span>{{ child.label }}</span>
-                                  </div>
+                                  </button>
                                 </div>
                               </template>
                             </div>
                           </div>
-                        </n-popover>
+                        </details>
                       </template>
                     </nav>
                   </div>
                 </aside>
 
-                <section class="workspace">
+                <section class="workspace" :inert="sidebarOpen && isNarrowWindow">
+                  <button
+                    type="button"
+                    class="mobile-nav-toggle"
+                    ref="sidebarTrigger"
+                    aria-controls="primary-navigation"
+                    :aria-expanded="sidebarOpen"
+                    :aria-label="sidebarOpen ? '关闭主导航' : '打开主导航'"
+                    @click="toggleSidebar"
+                  >
+                    <span aria-hidden="true">☰</span>
+                  </button>
                   <AppTitleBar v-if="showCustomTitleBar" />
 
                   <!-- 主内容区 -->
-                  <main class="main-area">
+                  <main id="main-content" class="main-area" tabindex="-1">
                     <div class="content-scroll">
                       <transition name="fade" mode="out-in">
-                        <keep-alive include="WorkflowDesigner">
-                          <component :is="activeComponent" :key="currentView" />
-                        </keep-alive>
+                        <component :is="activeComponent" :key="currentView" />
                       </transition>
                     </div>
                   </main>
                 </section>
               </div>
             </div>
-          </n-dialog-provider>
-        </n-notification-provider>
-      </n-message-provider>
-    </n-loading-bar-provider>
-  </n-config-provider>
 </template>
 
 <script setup>
-import {
-  NConfigProvider,
-  NLoadingBarProvider,
-  NMessageProvider,
-  NNotificationProvider,
-  NDialogProvider,
-  NIcon,
-  NPopover,
-} from "naive-ui";
 import AppTitleBar from "./components/AppTitleBar.vue";
 import { useAppShellController } from "./composables/useAppShellController";
 import * as navIconModule from "./modules/navigation/icons";
@@ -312,6 +327,9 @@ const resolveNavIcon =
 const {
   currentView,
   sidebarCollapsed,
+  sidebarOpen,
+  collapsedOpenGroup,
+  isNarrowWindow,
   userAvatarBase64,
   defaultAvatarBase64,
   standaloneMenuItems,
@@ -323,8 +341,11 @@ const {
   isGroupExpanded,
   toggleGroup,
   handleMenuClick,
+  handleCollapsedMenuClick,
+  toggleCollapsedGroup,
   toggleSidebar,
-  themeOverrides,
+  closeSidebar,
+  handleSidebarKeydown,
   showCustomTitleBar,
   windowShellClasses,
   windowAppearanceStyle,
@@ -394,7 +415,7 @@ const {
 }
 
 .app-shell {
-  --shell-bg: transparent;
+  --shell-bg: var(--ui-canvas, #f6f4ee);
   --shell-border: rgba(183, 188, 154, 0.52);
   --workspace-bg: #f4f1e5;
   --workspace-bg-strong: #faf7ef;
@@ -439,11 +460,7 @@ const {
   border-radius: 0;
   overflow: hidden;
   isolation: isolate;
-  background: linear-gradient(
-    180deg,
-    var(--workspace-bg) 0%,
-    var(--workspace-bg-strong) 100%
-  );
+  background: var(--workspace-bg);
   box-shadow: none;
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
@@ -480,72 +497,23 @@ const {
 }
 
 .window-system-blur.app-shell::before {
-  content: "";
-  display: block;
-  background:
-    radial-gradient(
-      circle at 18% 12%,
-      rgba(214, 219, 178, var(--ambient-glow-opacity, 0.08)) 0%,
-      transparent 28%
-    ),
-    linear-gradient(
-      180deg,
-      rgba(16, 22, 31, var(--ambient-opacity, 0.1)) 0%,
-      rgba(20, 28, 38, calc(var(--ambient-opacity, 0.1) + 0.04)) 100%
-    );
-  filter: none;
-  opacity: 1;
-  animation: none;
+  content: none;
+  display: none;
 }
 
 .window-system-blur.app-shell::after {
-  content: "";
-  display: block;
-  background: linear-gradient(
-    180deg,
-    rgba(255, 255, 255, var(--ambient-line-opacity, 0.02)) 0%,
-    transparent 42%,
-    rgba(255, 255, 255, calc(var(--ambient-line-opacity, 0.02) * 0.5)) 100%
-  );
-  opacity: 1;
+  content: none;
+  display: none;
 }
 
 .window-gpu-blur.app-shell::before {
-  content: "";
-  display: block;
-  background:
-    radial-gradient(
-      circle at 14% 14%,
-      rgba(205, 211, 167, var(--ambient-glow-opacity, 0.12)) 0%,
-      transparent 26%
-    ),
-    radial-gradient(
-      circle at 86% 10%,
-      rgba(181, 188, 134, calc(var(--ambient-glow-opacity, 0.1) * 0.92)) 0%,
-      transparent 24%
-    ),
-    linear-gradient(
-      180deg,
-      rgba(12, 18, 26, var(--ambient-opacity, 0.16)) 0%,
-      rgba(17, 25, 35, calc(var(--ambient-opacity, 0.16) + 0.06)) 100%
-    );
-  filter: none;
-  opacity: 1;
-  animation: none;
+  content: none;
+  display: none;
 }
 
 .window-gpu-blur.app-shell::after {
-  content: "";
-  display: block;
-  background: linear-gradient(
-    180deg,
-    rgba(255, 255, 255, var(--ambient-line-opacity, 0.02)) 0%,
-    transparent 26%,
-    rgba(255, 255, 255, calc(var(--ambient-line-opacity, 0.02) * 0.66)) 54%,
-    transparent 100%
-  );
-  opacity: 1;
-  animation: none;
+  content: none;
+  display: none;
 }
 
 .window-system-blur.app-shell .workspace {
@@ -554,8 +522,8 @@ const {
 }
 
 .window-gpu-blur.app-shell .workspace {
-  backdrop-filter: blur(calc(var(--glass-blur) * 1.12)) saturate(128%);
-  -webkit-backdrop-filter: blur(calc(var(--glass-blur) * 1.12)) saturate(128%);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
 }
 
 .window-system-blur.app-shell .sidebar {
@@ -598,29 +566,24 @@ const {
 }
 
 .window-dark.app-shell {
-  --shell-bg: transparent;
+  --shell-bg: var(--ui-canvas, #101917);
   --shell-border: rgba(164, 170, 121, 0.32);
-  --workspace-bg: rgba(17, 22, 29, var(--workspace-opacity, 0.76));
-  --workspace-bg-strong: rgba(
-    21,
-    27,
-    36,
-    var(--workspace-strong-opacity, 0.86)
-  );
-  --sidebar-bg: rgba(28, 31, 24, var(--sidebar-opacity, 0.82));
-  --surface-1: #1c1f18;
-  --surface-2: #262920;
-  --text-primary: #ffffff;
-  --text-secondary: #ffffff;
-  --text-tertiary: #ffffff;
-  --text-disabled: #ffffff;
+  --workspace-bg: #101917;
+  --workspace-bg-strong: #101917;
+  --sidebar-bg: #172522;
+  --surface-1: #172522;
+  --surface-2: #1d302c;
+  --text-primary: #e7f3ef;
+  --text-secondary: #b5ccc5;
+  --text-tertiary: #8da9a1;
+  --text-disabled: #78918a;
   --text-strong: var(--text-primary);
   --text-muted: var(--text-secondary);
-  --divider: rgba(164, 170, 121, 0.18);
-  --hover-bg: rgba(255, 255, 255, 0.06);
-  --active-bg: rgba(255, 255, 255, 0.1);
-  --selected-bg: rgba(173, 181, 113, 0.16);
-  --selected-border: rgba(173, 181, 113, 0.42);
+  --divider: #29463f;
+  --hover-bg: #203b35;
+  --active-bg: #254b43;
+  --selected-bg: #28564d;
+  --selected-border: #56c6b5;
   --status-success-bg: #173226;
   --status-success-text: #77d9a4;
   --status-success-border: #2d6e4b;
@@ -737,23 +700,21 @@ const {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  background: linear-gradient(
-    180deg,
-    color-mix(in srgb, var(--workspace-bg) 86%, #ffffff 14%) 0%,
-    var(--workspace-bg-strong) 100%
-  );
+  background: var(--workspace-bg);
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
   animation: contentRiseIn 260ms ease;
 }
 
+.mobile-nav-toggle {
+  display: none;
+}
+
 .sidebar {
   width: 236px;
-  background: linear-gradient(
-    180deg,
-    color-mix(in srgb, var(--sidebar-bg) 92%, #ffffff 8%) 0%,
-    var(--sidebar-bg) 100%
-  );
+  flex: 0 0 236px;
+  min-width: 236px;
+  background: var(--sidebar-bg);
   border-right: 1px solid var(--divider);
   box-shadow: inset -1px 0 0 rgba(255, 255, 255, 0.18);
   backdrop-filter: none;
@@ -767,6 +728,8 @@ const {
 
 .sidebar.collapsed {
   width: 74px;
+  flex-basis: 74px;
+  min-width: 74px;
 }
 
 .sidebar-inner {
@@ -774,6 +737,59 @@ const {
   display: flex;
   flex-direction: column;
   height: 100%;
+  min-width: 0;
+}
+
+.sidebar-overlay {
+  display: none;
+}
+
+.sidebar-close {
+  display: none;
+}
+
+.sidebar.collapsed .nav-group-block:hover .nav-group-items,
+.sidebar.collapsed .nav-group-block:focus-within .nav-group-items {
+  position: absolute;
+  left: 72px;
+  z-index: 130;
+  display: flex;
+  min-width: 220px;
+  padding: 8px;
+  border: 1px solid var(--divider);
+  border-radius: 12px;
+  background: var(--sidebar-bg);
+  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.18);
+}
+
+/* Collapsed navigation uses details as icon buttons. Keep the submenu out of
+   the 74px rail so labels never get clipped into partial words. */
+.sidebar.collapsed .nav-list {
+  overflow: visible;
+}
+
+.sidebar.collapsed .nav-collapsed-group {
+  position: relative;
+  display: block;
+  min-height: 40px;
+}
+
+.sidebar.collapsed .nav-collapsed-group > .group-flyout {
+  position: absolute;
+  top: 0;
+  left: calc(100% + 8px);
+  z-index: 130;
+  display: none;
+}
+
+.sidebar.collapsed .nav-collapsed-group[open] > .group-flyout,
+.sidebar.collapsed .nav-collapsed-group[data-flyout-open="true"] > .group-flyout {
+  display: flex;
+}
+
+.sidebar.collapsed .nav-group-pill {
+  width: 54px;
+  margin: 0 auto;
 }
 
 .logo {
@@ -788,6 +804,11 @@ const {
     border-color 180ms ease;
   border-radius: 16px;
   border: 1px solid transparent;
+  width: 100%;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  font: inherit;
 }
 
 .logo:hover {
@@ -852,7 +873,13 @@ const {
   flex-direction: column;
   gap: 6px;
   overflow-y: auto;
+  overflow-x: hidden;
   padding-right: 4px;
+  min-width: 0;
+}
+
+.sidebar.collapsed .nav-list {
+  overflow-x: visible;
 }
 
 .nav-quick-section {
@@ -904,6 +931,7 @@ const {
   line-height: 1.2;
   text-align: left;
   cursor: pointer;
+  min-width: 0;
   transition:
     background-color 180ms ease,
     color 180ms ease,
@@ -984,6 +1012,20 @@ const {
     border-color 180ms ease,
     box-shadow 180ms ease;
   position: relative;
+  width: 100%;
+  background: transparent;
+  text-align: left;
+  font: inherit;
+  min-width: 0;
+}
+
+.nav-item:focus-visible,
+.logo:focus-visible,
+.nav-group-header:focus-visible,
+.nav-group-pill:focus-visible,
+.submenu-item:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .sidebar.collapsed .nav-item {
@@ -1060,6 +1102,7 @@ const {
   flex: 1;
   white-space: nowrap;
   overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .sidebar.collapsed .nav-text {
@@ -1088,6 +1131,10 @@ const {
   font-size: 13px;
   line-height: 1.2;
   transition: all 0.2s ease;
+  width: 100%;
+  background: transparent;
+  text-align: left;
+  font: inherit;
 }
 
 .submenu-item-icon {
@@ -1179,6 +1226,13 @@ const {
   animation: contentRiseIn 320ms ease;
 }
 
+/* Keep routed content visible when the parent transition is interrupted by a
+   fast navigation or a heavy page render. The content animation still runs,
+   but a stale enter-from class must never blank the work area. */
+.content-scroll > .fade-enter-from {
+  opacity: 1;
+}
+
 .fade-enter-active,
 .fade-leave-active {
   transition: opacity 0.2s ease;
@@ -1221,6 +1275,17 @@ const {
     height: 100vh;
     z-index: 100;
     transform: translateX(-100%);
+    flex: 0 0 260px;
+    min-width: 260px;
+  }
+
+  .sidebar-overlay {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 99;
+    background: rgba(18, 20, 17, 0.18);
+    backdrop-filter: none;
   }
 
   .sidebar.open {
@@ -1228,15 +1293,54 @@ const {
   }
 
   .sidebar.collapsed {
-    width: 72px;
+    width: 260px;
+    flex-basis: 260px;
+    min-width: 260px;
   }
 
   .sidebar-inner {
     padding: 12px 10px;
   }
 
+  .sidebar-close {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    align-self: flex-end;
+    width: 44px;
+    min-height: 44px;
+    margin: 0 2px 8px 0;
+    border: 1px solid var(--divider);
+    border-radius: 10px;
+    background: transparent;
+    color: var(--text-strong);
+    font-size: 24px;
+  }
+
   .content-scroll {
     padding: 10px 14px;
+  }
+
+  .mobile-nav-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    position: absolute;
+    top: 12px;
+    left: 12px;
+    z-index: 50;
+    width: 42px;
+    height: 42px;
+    border: 1px solid var(--divider);
+    border-radius: 12px;
+    background: var(--sidebar-bg);
+    color: var(--text-strong);
+    font-size: 20px;
+  }
+
+  .mobile-nav-toggle:focus-visible {
+    outline: 3px solid var(--accent);
+    outline-offset: 2px;
   }
 }
 
@@ -1274,3 +1378,4 @@ var(--accent) 32%, transparent); transform: translateY(0); }
 .nav-group-title, .nav-group-header.active .nav-group-arrow, .nav-item.active
 .nav-icon, .nav-item.active .nav-text, .nav-group-pill.active .nav-icon,
 .submenu-item.active .submenu-item-icon { color: #fffdf4 !important; }
+

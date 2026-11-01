@@ -3,7 +3,7 @@
     <header class="page-header card">
       <div class="header-copy">
         <p class="eyebrow">任务处理 / 音声下载</p>
-        <h2 class="page-title">ASMR 音声下载任务</h2>
+        <h1 class="page-title">ASMR 音声下载任务</h1>
         <p class="page-desc">
           将批量 RJ/VJ/BJ 编号解析为音频下载任务，自动应用 Python
           脚本里的过滤、去重与路径保护逻辑。
@@ -109,13 +109,25 @@
 
           <div class="field-group">
             <label class="field-label" for="asmr-rpc-secret">RPC Secret</label>
-            <input
-              id="asmr-rpc-secret"
-              v-model="rpcSecret"
-              class="input"
-              type="password"
-              placeholder="可留空"
-            />
+            <div class="secret-input-wrap">
+              <input
+                id="asmr-rpc-secret"
+                v-model="rpcSecret"
+                class="input"
+                :type="showRpcSecret ? 'text' : 'password'"
+                placeholder="可留空"
+                autocomplete="off"
+              />
+              <button
+                type="button"
+                class="btn-secondary secret-toggle"
+                :aria-pressed="showRpcSecret"
+                :aria-label="showRpcSecret ? '隐藏 RPC Secret' : '显示 RPC Secret'"
+                @click="showRpcSecret = !showRpcSecret"
+              >
+                {{ showRpcSecret ? "隐藏" : "显示" }}
+              </button>
+            </div>
           </div>
 
           <div class="field-group">
@@ -137,6 +149,7 @@
         <button
           class="btn-primary submit-btn"
           :disabled="!canSubmit"
+          :aria-busy="isSubmitting"
           @click="runDownloader"
         >
           {{ isSubmitting ? "处理中..." : "生成下载任务" }}
@@ -158,11 +171,18 @@
         </div>
 
         <template v-else>
-          <div v-if="summaryText" class="result-box">
+          <div v-if="summaryText" class="result-box" role="status" aria-live="polite" :aria-busy="isSubmitting">
             <pre>{{ summaryText }}</pre>
           </div>
 
-          <div v-if="errorText" class="result-box result-box-error">
+          <div v-if="summary" class="task-stage-summary" aria-label="任务阶段统计">
+            <span>规划 {{ summary.taskCount || 0 }}</span>
+            <span>已提交 {{ summary.submittedCount || summary.pushedCount || 0 }}</span>
+            <span>完成 {{ summary.completedCount || 0 }}</span>
+            <span>不确定 {{ summary.uncertainCount || summary.pushErrorCount || 0 }}</span>
+          </div>
+
+          <div v-if="errorText" class="result-box result-box-error" role="alert">
             <pre>{{ errorText }}</pre>
           </div>
 
@@ -197,7 +217,10 @@
 </template>
 
 <script setup>
+import { ref } from "vue";
 import { useAsmrDownloaderPage } from "../composables/useAsmrDownloaderPage";
+
+const showRpcSecret = ref(false);
 
 const {
   inputText,
@@ -210,6 +233,7 @@ const {
   maxAutoTasksPerWork,
   isSubmitting,
   summaryText,
+  summary,
   errorText,
   importText,
   taskPreview,
@@ -385,15 +409,23 @@ const {
   gap: 0.5rem;
 }
 
+.secret-input-wrap {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.secret-input-wrap .input { min-width: 0; }
+.secret-toggle { flex: 0 0 auto; }
+
 .input,
 .textarea {
   width: 100%;
   min-height: 2.75rem;
   padding: 0.75rem 0.875rem;
-  border-radius: 0.75rem;
-  border: 1px solid #d8d0bb;
-  background: #fff;
-  color: #26251f;
+  border-radius: var(--ui-radius-sm);
+  border: 1px solid var(--ui-border);
+  background: var(--ui-surface-raised);
+  color: var(--ui-text-primary);
   font-size: 0.9375rem;
   box-sizing: border-box;
   outline: none;
@@ -401,12 +433,12 @@ const {
 
 .input:focus,
 .textarea:focus {
-  border-color: #adb571;
+  border-color: var(--ui-focus-ring);
 }
 
 .input:readonly {
-  background: #f7f2e8;
-  color: #86806f;
+  background: var(--ui-surface-muted);
+  color: var(--ui-text-secondary);
 }
 
 .textarea {
@@ -436,7 +468,7 @@ const {
   min-height: 2.75rem;
   font-size: 0.875rem;
   line-height: 1.5;
-  color: #66614f;
+  color: var(--ui-text-primary);
 }
 
 .checkbox-copy {
@@ -448,7 +480,7 @@ const {
 .checkbox-note {
   font-size: 0.75rem;
   line-height: 1.4;
-  color: #8b856f;
+  color: var(--ui-text-secondary);
 }
 
 .checkbox {
@@ -458,11 +490,16 @@ const {
   flex-shrink: 0;
 }
 
+.checkbox:focus-visible {
+  outline: 3px solid var(--ui-focus-ring);
+  outline-offset: 2px;
+}
+
 .btn-primary,
 .btn-secondary {
   min-height: 2.75rem;
-  border: none;
-  border-radius: 0.75rem;
+  border: 1px solid transparent;
+  border-radius: var(--ui-radius-sm);
   font-size: 0.9375rem;
   font-weight: 600;
   cursor: pointer;
@@ -473,27 +510,29 @@ const {
 
 .btn-primary {
   padding: 0.75rem 1rem;
-  background: #adb571;
+  border-color: var(--ui-action-primary);
+  background: var(--ui-action-primary);
   color: #fff;
 }
 
 .btn-primary:hover:not(:disabled) {
-  background: #94a25b;
+  background: var(--ui-action-primary-hover);
 }
 
 .btn-primary:disabled {
-  background: #d4d4d4;
+  background: var(--ui-text-disabled);
   cursor: not-allowed;
 }
 
 .btn-secondary {
   padding: 0.75rem 1rem;
-  background: #f2ede0;
-  color: #66614f;
+  border-color: var(--ui-border);
+  background: var(--ui-action-secondary);
+  color: var(--ui-text-primary);
 }
 
 .btn-secondary:hover {
-  background: #e5decc;
+  background: color-mix(in srgb, var(--ui-action-secondary) 72%, var(--ui-action-primary) 28%);
 }
 
 .submit-btn {
@@ -511,8 +550,8 @@ const {
   min-height: 14rem;
   padding: 1rem;
   border-radius: 0.75rem;
-  background: #f7f2e8;
-  color: #7b7665;
+  background: var(--ui-surface-muted);
+  color: var(--ui-text-secondary);
   text-align: center;
 }
 
@@ -525,16 +564,27 @@ const {
 .result-title {
   margin: 0;
   font-size: 0.9375rem;
-  color: #37342a;
+  color: var(--ui-text-primary);
 }
 
 .result-box {
   padding: 0.875rem;
   border-radius: 0.75rem;
-  background: #f7f2e8;
-  color: #66614f;
+  background: var(--ui-surface-muted);
+  color: var(--ui-text-secondary);
   max-height: 18rem;
   overflow: auto;
+}
+
+.task-stage-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  padding: 0.75rem;
+  border-radius: 0.75rem;
+  background: color-mix(in srgb, var(--ui-status-success) 10%, var(--ui-surface));
+  color: var(--ui-status-success);
+  font-size: 0.8rem;
 }
 
 .compact-box {
@@ -542,8 +592,8 @@ const {
 }
 
 .result-box-error {
-  background: #fff0f0;
-  color: #8f3030;
+  background: color-mix(in srgb, var(--ui-status-error) 10%, var(--ui-surface));
+  color: var(--ui-status-error);
 }
 
 .result-box pre {
@@ -592,5 +642,10 @@ const {
   .result-panel {
     max-height: calc(100vh - 13rem);
   }
+}
+
+@media (max-width: 700px) {
+  .secret-input-wrap { flex-direction: column; }
+  .secret-toggle { width: 100%; }
 }
 </style>

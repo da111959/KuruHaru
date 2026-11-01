@@ -7,6 +7,7 @@ export const useRjDuplicateDetectorController = ({ message, dialog }) => {
 
   const tableViewState = useRjDuplicateTableViewState({
     scanResults: runtimeState.scanResults,
+    scanSnapshotId: runtimeState.scanSnapshotId,
     statistics: runtimeState.statistics,
   });
 

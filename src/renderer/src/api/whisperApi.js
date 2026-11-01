@@ -1,63 +1,20 @@
-import { getApiNamespace, getWindowApi, resolveBridgeMethod } from './bridge';
+import { callBridge, getApiNamespace } from './bridge';
 
 const getWhisperBridge = () => getApiNamespace('whisper');
 
-const callWhisper = (method, fallback, ...args) => {
-  const resolved = resolveBridgeMethod({
-    namespace: 'whisper',
-    method,
-    fallbacks: [fallback],
-  });
-  return resolved(...args);
-};
-
-const removeWhisperListener = (method, fallback, channel, handler) => {
-  const bridge = getWhisperBridge();
-  const api = getWindowApi();
-  if (typeof bridge[method] === 'function') {
-    return bridge[method](handler);
-  }
-  if (typeof api[fallback] === 'function') {
-    return api[fallback](handler);
-  }
-  return api.removeListener?.(channel, handler);
-};
-
 export const startTask = (payload) =>
-  callWhisper('startTask', 'startTask', payload);
+  callBridge({ namespace: 'whisper', method: 'startTask', args: [payload] });
 
-export const stopTask = () => callWhisper('stopTask', 'stopTask');
+export const stopTask = () => callBridge({ namespace: 'whisper', method: 'stopTask' });
 
-export const countMediaFiles = (targetPath) => {
-  const bridge = getWhisperBridge();
-  const api = getWindowApi();
-  if (typeof bridge.countMediaFiles === 'function') {
-    return bridge.countMediaFiles(targetPath);
-  }
-  if (typeof api.countMediaFiles === 'function') {
-    return api.countMediaFiles(targetPath);
-  }
-  throw new Error('[whisperApi] Missing API bridge method: countMediaFiles');
-};
+export const countMediaFiles = (targetPath) =>
+  callBridge({ namespace: 'whisper', method: 'countMediaFiles', args: [targetPath] });
+
+export const getTaskHistory = () =>
+  callBridge({ namespace: 'whisper', method: 'getTaskHistory' });
 
 export const onTaskFinished = (handler) =>
-  callWhisper('onTaskFinished', 'onTaskFinished', handler);
+  getWhisperBridge().onTaskFinished(handler);
 
 export const onLogUpdate = (handler) =>
-  callWhisper('onLogUpdate', 'onLogUpdate', handler);
-
-export const removeTaskFinishedListener = (handler) =>
-  removeWhisperListener(
-    'removeTaskFinishedListener',
-    'removeTaskFinishedListener',
-    'task-finished',
-    handler,
-  );
-
-export const removeLogUpdateListener = (handler) =>
-  removeWhisperListener(
-    'removeLogUpdateListener',
-    'removeLogUpdateListener',
-    'log-update',
-    handler,
-  );
+  getWhisperBridge().onLogUpdate(handler);

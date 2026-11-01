@@ -36,6 +36,18 @@ describe("whisperTaskRecovery", () => {
     expect(result.isRecoverable).toBe(false);
   });
 
+  it("把字幕完整性失败作为不可自动重试的业务错误", () => {
+    const result = classifyWhisperTaskResult({
+      success: false,
+      reason: "validation-failed",
+      error: "存在 1 个音频缺少对应字幕",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.isValidationFailure).toBe(true);
+    expect(result.isRecoverable).toBe(false);
+  });
+
   it("会把可通过重启恢复的 ArrayMemoryError 识别成自动恢复场景", () => {
     const result = classifyWhisperTaskResult({
       error:

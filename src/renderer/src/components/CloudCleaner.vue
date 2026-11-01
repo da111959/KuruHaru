@@ -2,8 +2,8 @@
   <div class="page-container cloud-cleaner-theme">
     <div class="page-header cleaner-header">
       <div class="page-header-main">
-        <span class="page-eyebrow">Cloud Maintenance</span>
-        <h2 class="page-title">云端清理</h2>
+        <span class="page-eyebrow">数据工具 / 云端维护</span>
+        <h1 class="page-title">云端清理</h1>
         <p class="page-header-subtitle">
           筛选、批量选择并清理云端作品，保持库内内容干净可控。
         </p>
@@ -18,13 +18,13 @@
 
     <div class="action-bar card">
       <div class="action-group primary-actions">
-        <button class="btn-secondary" @click="checkRecentUpload">
+        <button class="btn-secondary" :disabled="isBusy" @click="checkRecentUpload">
           {{ uploadButtonText }}
         </button>
-        <button class="btn-secondary" @click="fetchCloudWorks">刷新云端</button>
+        <button class="btn-secondary" :disabled="isBusy" @click="fetchCloudWorks">刷新云端</button>
         <button
-          class="btn-primary"
-          :disabled="selectedCloudWorks.length === 0"
+          class="btn-danger"
+          :disabled="isBusy || selectedCloudWorks.length === 0"
           @click="deleteSelected"
         >
           删除 ({{ selectedCloudWorks.length }})
@@ -47,33 +47,37 @@
         <p class="card-caption">通过搜索、匹配模式和标签快速定位待清理作品。</p>
       </div>
 
+      <label class="sr-only" for="cloud-search">搜索云端作品</label>
       <input
+        id="cloud-search"
         v-model="searchText"
         class="input search-input"
         placeholder="搜索标题、编号或标签内容..."
       />
 
-      <div class="tag-mode-switch">
-        <label class="mode-label">筛选模式</label>
+      <fieldset class="tag-mode-switch">
+        <legend class="mode-label">筛选模式</legend>
         <label class="mode-option">
           <input v-model="tagMode" type="radio" value="OR" /> OR(满足任一)
         </label>
         <label class="mode-option">
           <input v-model="tagMode" type="radio" value="AND" /> AND(满足全部)
         </label>
-      </div>
+      </fieldset>
 
       <div v-if="allTags.length > 0" class="tag-filter">
         <span class="filter-label">标签筛选</span>
         <div class="tag-list">
-          <span
+          <button
+            type="button"
             class="tag-item"
             :class="{ active: selectedTags.length === 0 }"
             @click="clearTagFilter"
           >
             全部
-          </span>
-          <span
+          </button>
+          <button
+            type="button"
             v-for="tag in allTagsWithCount"
             :key="tag.name"
             class="tag-item"
@@ -81,7 +85,7 @@
             @click="toggleTag(tag.name)"
           >
             {{ tag.name }} ({{ tag.count }})
-          </span>
+          </button>
         </div>
       </div>
     </div>
@@ -96,7 +100,7 @@
       <div class="source-list">
         <div class="source-item">
           <div class="source-header">
-            <span class="source-icon">☁</span>
+            <span class="source-icon" aria-hidden="true">云</span>
             <span class="source-label">云端作品</span>
             <span v-if="displayedWorks.length > 0" class="badge-info"
               >{{ displayedWorks.length }} 条</span
@@ -139,11 +143,19 @@
           class="file-row"
           :class="{ selected: selectedCloudWorks.includes(item.id) }"
           @click="toggleSelect(item.id)"
+          @keydown.enter.prevent="toggleSelect(item.id)"
+          @keydown.space.prevent="toggleSelect(item.id)"
+          role="button"
+          tabindex="0"
+          :aria-pressed="selectedCloudWorks.includes(item.id)"
         >
           <input
             type="checkbox"
             :checked="selectedCloudWorks.includes(item.id)"
-            readonly
+            :aria-label="`选择 ${item.source_id || item.title || item.id}`"
+            @click.stop
+            @keydown.stop
+            @change="toggleSelect(item.id)"
           />
           <span class="code">{{ item.source_id || item.id }}</span>
           <span class="name">{{ item.title }}</span>
@@ -161,8 +173,11 @@
 </template>
 
 <script setup>
+import { createDialog, createMessage } from "../utils/ui-feedback";
 import { useCloudCleaner } from "../composables/useCloudCleaner";
 
+const dialog = createDialog();
+const message = createMessage();
 const {
   selectedCloudWorks,
   searchText,
@@ -183,7 +198,8 @@ const {
   clearSelection,
   fetchCloudWorks,
   deleteSelected,
-} = useCloudCleaner();
+  isBusy,
+} = useCloudCleaner({ dialog, message });
 </script>
 
 <style scoped>
@@ -222,6 +238,7 @@ const {
 }
 
 .btn-primary,
+.btn-danger,
 .btn-secondary {
   min-height: 40px;
 }
@@ -265,13 +282,9 @@ const {
 
 .source-item {
   padding: 14px 16px;
-  border-radius: 14px;
+  border-radius: var(--ui-radius-sm);
   border: 1px solid var(--page-control-border);
-  background: color-mix(
-    in srgb,
-    var(--page-control-bg) 84%,
-    rgba(255, 253, 245, 0.08)
-  );
+  background: var(--ui-surface-muted);
 }
 
 .source-header {
@@ -323,6 +336,24 @@ const {
   align-items: center;
   gap: 16px;
   flex-wrap: wrap;
+  border: 0;
+  margin: 0;
+  padding: 0;
+}
+
+.btn-danger {
+  background: var(--ui-action-danger, #b42318);
+  color: #fff;
+  border: 1px solid var(--ui-action-danger, #b42318);
+}
+
+.btn-danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--ui-action-danger, #b42318) 84%, #000 16%);
+}
+
+.btn-danger:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 
 .mode-label,
@@ -330,6 +361,11 @@ const {
   font-size: 13px;
   font-weight: 600;
   color: var(--page-text-muted);
+}
+
+.mode-label {
+  float: left;
+  margin-right: 4px;
 }
 
 .mode-option {
@@ -388,13 +424,9 @@ const {
 }
 
 .tag-item.active {
-  background: linear-gradient(
-    135deg,
-    color-mix(in srgb, var(--accent) 92%, #cbd39c 8%),
-    color-mix(in srgb, var(--accent) 72%, #7f8750 28%)
-  );
+  background: color-mix(in srgb, var(--accent) 14%, var(--ui-surface));
   border-color: color-mix(in srgb, var(--accent) 58%, transparent);
-  color: #fffdf4;
+  color: var(--page-text-strong);
   box-shadow: 0 10px 20px color-mix(in srgb, var(--accent) 18%, transparent);
 }
 
@@ -411,13 +443,9 @@ const {
 }
 
 .badge-info {
-  background: linear-gradient(
-    135deg,
-    color-mix(in srgb, var(--accent) 92%, #cbd39c 8%),
-    color-mix(in srgb, var(--accent) 72%, #7f8750 28%)
-  );
+  background: color-mix(in srgb, var(--accent) 14%, var(--ui-surface));
   border: 1px solid color-mix(in srgb, var(--accent) 58%, transparent);
-  color: #fffdf4;
+  color: var(--page-text-strong);
 }
 
 .badge-warning {
@@ -469,7 +497,7 @@ const {
   gap: 12px;
   min-height: 56px;
   padding: 12px 14px;
-  border-radius: 14px;
+  border-radius: var(--ui-radius-sm);
   border: 1px solid transparent;
   cursor: pointer;
   background: color-mix(
@@ -491,13 +519,9 @@ const {
 }
 
 .file-row.selected {
-  background: linear-gradient(
-    135deg,
-    color-mix(in srgb, var(--accent) 24%, var(--page-panel-bg) 76%),
-    color-mix(in srgb, var(--accent) 12%, rgba(0, 0, 0, 0.06))
-  );
+  background: color-mix(in srgb, var(--accent) 14%, var(--page-panel-bg));
   border-color: color-mix(in srgb, var(--accent) 40%, transparent);
-  box-shadow: 0 12px 22px color-mix(in srgb, var(--accent) 16%, transparent);
+  box-shadow: none;
 }
 
 .file-row input[type="checkbox"] {
@@ -513,13 +537,9 @@ const {
   min-height: 28px;
   padding: 4px 10px;
   border-radius: 999px;
-  background: linear-gradient(
-    135deg,
-    color-mix(in srgb, var(--accent) 92%, #cbd39c 8%),
-    color-mix(in srgb, var(--accent) 72%, #7f8750 28%)
-  );
+  background: color-mix(in srgb, var(--accent) 14%, var(--ui-surface));
   border: 1px solid color-mix(in srgb, var(--accent) 58%, transparent);
-  color: #fffdf4;
+  color: var(--page-text-strong);
   font-size: 12px;
   font-weight: 700;
   font-family: monospace;
@@ -614,3 +634,5 @@ const {
   }
 }
 </style>
+
+

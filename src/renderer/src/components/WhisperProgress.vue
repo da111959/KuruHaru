@@ -1,11 +1,22 @@
 <template>
   <div class="page-container">
     <div class="progress-section card">
+      <div class="progress-section-title">
+        <span>翻译进度</span>
+        <span class="progress-count" v-if="store.totalFiles">{{ store.processedCount }}/{{ store.totalFiles }} 个文件</span>
+      </div>
       <div class="progress-header">
         <span class="file-name">{{ store.currentFile || "等待开始..." }}</span>
         <span class="percentage">{{ overallProgress }}%</span>
       </div>
-      <div class="progress-track">
+      <div
+        class="progress-track"
+        role="progressbar"
+        :aria-valuenow="overallProgress"
+        aria-valuemin="0"
+        aria-valuemax="100"
+        aria-label="翻译进度"
+      >
         <div
           class="progress-fill"
           :style="{ width: overallProgress + '%' }"
@@ -18,7 +29,11 @@
     </div>
 
     <div class="log-section card">
-      <div ref="logRef" class="log-body">
+      <div class="log-heading">
+        <strong>运行日志</strong>
+        <span>{{ store.logs.length }} 条</span>
+      </div>
+      <div ref="logRef" class="log-body" role="log" aria-live="polite" aria-relevant="additions">
         <div v-for="(log, i) in store.logs" :key="i" class="log-line">
           {{ log }}
         </div>
@@ -52,11 +67,31 @@ const { store, logRef, overallProgress, statusText, formatTime, stopTask } =
   flex-direction: column;
   gap: 16px;
   padding: 20px;
-  background: #f7f2e8;
+  background: var(--ui-surface-muted);
 }
 
 .progress-section {
   padding: 20px;
+  flex: 0 0 auto;
+}
+
+.progress-section-title,
+.log-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+  color: var(--ui-text-primary);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.progress-count,
+.log-heading span {
+  color: var(--ui-text-secondary);
+  font-size: 12px;
+  font-weight: 500;
 }
 
 .progress-header {
@@ -66,7 +101,7 @@ const { store, logRef, overallProgress, statusText, formatTime, stopTask } =
 }
 
 .file-name {
-  color: #adb571;
+  color: var(--ui-action-primary);
   font-weight: 500;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -76,19 +111,19 @@ const { store, logRef, overallProgress, statusText, formatTime, stopTask } =
 
 .percentage {
   font-weight: 600;
-  color: #26251f;
+  color: var(--ui-text-primary);
 }
 
 .progress-track {
   height: 8px;
-  background: #d8d0bb;
+  background: var(--ui-border);
   border-radius: 4px;
   overflow: hidden;
 }
 
 .progress-fill {
   height: 100%;
-  background: linear-gradient(90deg, #adb571, #2283d8);
+  background: var(--ui-action-primary);
   transition: width 0.3s ease;
 }
 
@@ -97,9 +132,9 @@ const { store, logRef, overallProgress, statusText, formatTime, stopTask } =
   justify-content: space-between;
   margin-top: 8px;
   font-size: 13px;
-  color: #66614f;
+  color: var(--ui-text-secondary);
   padding-top: 8px;
-  border-top: 1px solid #d8d0bb;
+  border-top: 1px solid var(--ui-divider);
 }
 
 .log-section {
@@ -109,6 +144,7 @@ const { store, logRef, overallProgress, statusText, formatTime, stopTask } =
   overflow: hidden;
   min-height: 0;
   padding: 16px;
+  gap: 10px;
 }
 
 .log-body {
@@ -116,9 +152,10 @@ const { store, logRef, overallProgress, statusText, formatTime, stopTask } =
   overflow-y: auto;
   font-family: monospace;
   font-size: 13px;
-  background: #f7f2e8;
+  background: var(--ui-surface-muted);
   border-radius: 8px;
   padding: 12px;
+  min-height: 0;
 }
 
 .log-line {
@@ -132,7 +169,7 @@ const { store, logRef, overallProgress, statusText, formatTime, stopTask } =
   align-items: center;
   justify-content: center;
   height: 100%;
-  color: #a3a3a3;
+  color: var(--ui-text-secondary);
 }
 
 .log-body::-webkit-scrollbar {
@@ -140,7 +177,7 @@ const { store, logRef, overallProgress, statusText, formatTime, stopTask } =
 }
 
 .log-body::-webkit-scrollbar-thumb {
-  background: #d8d0bb;
+  background: var(--ui-border);
   border-radius: 3px;
 }
 
@@ -154,14 +191,14 @@ const { store, logRef, overallProgress, statusText, formatTime, stopTask } =
   padding: 14px;
   border: none;
   border-radius: 8px;
-  background: #adb571;
+  background: var(--ui-action-primary);
   color: #fff;
   font-weight: 500;
   cursor: pointer;
 }
 
 .btn-primary:disabled {
-  background: #d4d4d4;
+  background: var(--ui-text-disabled);
   cursor: not-allowed;
 }
 
@@ -170,15 +207,15 @@ const { store, logRef, overallProgress, statusText, formatTime, stopTask } =
   padding: 14px;
   border: none;
   border-radius: 8px;
-  background: #f2ede0;
-  color: #66614f;
+  background: var(--ui-action-secondary);
+  color: var(--ui-text-primary);
   font-weight: 500;
   cursor: pointer;
 }
 
 .card {
-  background: #fff;
-  border-radius: 12px;
-  border: 1px solid #d8d0bb;
+  background: var(--ui-surface);
+  border-radius: var(--ui-radius-md);
+  border: 1px solid var(--ui-border);
 }
 </style>

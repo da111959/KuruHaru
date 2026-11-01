@@ -1,9 +1,6 @@
 {
   "profile": {
-    "username": "User",
-    "avatar": null,
-    "status": "online",
-    "lastActive": null
+    "username": "User"
   },
   "tg": {
     "apiId": "",
@@ -12,19 +9,19 @@
     "session": "",
     "discussion": "",
     "channel": "",
-    "infoCachePath": "",
-    "infoRequestTimeoutMs": 20000,
-    "infoCacheMaxConcurrency": 5,
+    "botToken": "",
+    "searchChannelId": "",
+    "prePackagePath": "",
+    "prePackageLink": "",
+    "botAllowedUsers": [],
+    "botAllowedChats": [],
+    "botMode": "polling",
+    "botWebhookUrl": "",
+    "botWebhookPort": 8443,
+    "botSearchLimit": 3000,
+    "botHistoryPath": "",
+    "botWhitelistDebugLog": false,
     "infoCacheMaxFileSizeMB": 50,
-    "infoCachePersistOnFetch": true,
-    "infoHotCacheEnabled": true,
-    "infoHotCacheIntervalMs": 3600000,
-    "infoHotCacheActiveIntervalMs": 1200000,
-    "infoHotCacheCoolIntervalMs": 10800000,
-    "infoHotCacheActiveWindowMs": 86400000,
-    "infoHotCacheCoolAfterMs": 259200000,
-    "infoHotCachePageSize": 100,
-    "infoHotCacheStartupDelayMs": 1500,
     "proxyUrl": ""
   },
   "asmr": {
@@ -33,21 +30,23 @@
     "token": "",
     "playlistId": "",
     "translationQueuePlaylistId": "",
-    "rememberMe": false,
+    "downloadRpcUrl": "http://localhost:6800/jsonrpc",
+    "downloadRpcSecret": "",
+    "downloadUseAria2": true,
+    "downloadTestMode": false,
+    "downloadMaxAutoTasksPerWork": 20,
+    "downloadFilterVideoFormats": true,
     "proxyUrl": ""
   },
   "paths": {
     "configDir": "",
     "sourceDir": "",
     "toolOutputDir": "",
-    "whisperTargetPath": "",
+    "asmrDownloadDir": "",
     "dataDir": "",
     "logsDir": "",
     "chineseListPath": "",
     "tgDownloadDir": "",
-    "configFilePath": "",
-    "tagsDir": "",
-    "historyDir": "",
     "uploadHistoryDir": ""
   },
   "upload": {
@@ -56,32 +55,24 @@
   "whisper": {
     "exePath": "",
     "targetPath": "",
-    "subFormats": ["lrc"]
+    "subFormats": [
+      "lrc"
+    ]
   },
   "translationAutomation": {
     "enabled": false,
     "runOnStartup": true,
     "scanIntervalMs": 1800000,
-    "recentOrder": "create_date",
-    "recentPageSize": 100,
-    "recentMaxPages": 3,
     "maxWorksPerCycle": 3,
     "maxDownloadTasksPerWork": 200,
     "aria2RestartMaxAttempts": 3,
-    "aria2RestartCooldownMs": 300000,
     "aria2EarlyRetryPercent": 80,
     "includeTags": [],
     "excludeTags": [],
     "requireAllIncludeTags": false,
     "startHour": 1,
     "endHour": 7,
-    "downloadWaitTimeoutMs": 21600000,
-    "downloadPollIntervalMs": 30000,
-    "downloadStablePolls": 2,
-    "whisperStallTimeoutMs": 600000,
-    "whisperActivityPollMs": 15000,
-    "cleanupLocalAfterUpload": true,
-    "packageDirName": "_translated_packages"
+    "cleanupLocalAfterUpload": true
   },
   "logging": {
     "level": "info",
@@ -89,16 +80,15 @@
   },
   "system": {
     "theme": "auto",
-    "language": "zh",
     "autoStart": false,
     "minimizeToTray": true,
     "windowFrameMode": "custom",
-    "saveCustomPaths": true,
     "proxyUrl": "",
-    "windowOpacity": 0.92,
-    "blurEnabled": true,
+    "windowOpacity": 1,
+    "blurEnabled": false,
     "blurIntensity": 8,
     "blurRenderMode": "system",
     "accentColor": "#adb571"
-  }
+  },
+  "configVersion": 1
 }
