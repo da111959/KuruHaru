@@ -312,6 +312,92 @@ describe("tg-search-bot queue fallback", () => {
     );
   });
 
+  it("finds official language editions listed outside the database edition field", async () => {
+    asmrClientMock.get.mockImplementation(async (url) => {
+      const searchUrl = String(url);
+      if (searchUrl.includes("/api/search/RJ01227025")) {
+        return {
+          status: 200,
+          data: {
+            works: [
+              {
+                id: 1227025,
+                source_id: "RJ01227025",
+                has_subtitle: false,
+                other_language_editions_in_db: [
+                  {
+                    id: 1227025,
+                    source_id: "RJ01227025",
+                    lang: "日本語",
+                  },
+                ],
+                language_editions: [
+                  { lang: "JPN", workno: "RJ01227025" },
+                  { lang: "ENG", workno: "RJ01329387" },
+                  { lang: "CHI_HANS", workno: "RJ01329454" },
+                ],
+                tags: [],
+              },
+            ],
+          },
+        };
+      }
+
+      if (searchUrl.includes("/api/search/RJ01329454")) {
+        return {
+          status: 200,
+          data: {
+            works: [
+              {
+                id: 1329454,
+                source_id: "RJ01329454",
+                has_subtitle: true,
+                tags: [],
+              },
+            ],
+          },
+        };
+      }
+
+      return { status: 200, data: { works: [] } };
+    });
+
+    const result = await handleSearchRequest("RJ01227025", {
+      enableOneQueue: true,
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.source).toBe("one_subtitle");
+    expect(result.url).toBe("https://www.asmr.one/work/RJ01329454");
+    expect(result.message).toContain("RJ01329454");
+    expect(asmrClientMock.post).not.toHaveBeenCalled();
+  });
+
+  it("returns a directly searched official translation with subtitles", async () => {
+    asmrClientMock.get.mockResolvedValue({
+      status: 200,
+      data: {
+        works: [
+          {
+            id: 1329454,
+            source_id: "RJ01329454",
+            has_subtitle: true,
+            tags: [],
+          },
+        ],
+      },
+    });
+
+    const result = await handleSearchRequest("RJ01329454", {
+      enableOneQueue: true,
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.source).toBe("one_subtitle");
+    expect(result.url).toBe("https://www.asmr.one/work/RJ01329454");
+    expect(asmrClientMock.post).not.toHaveBeenCalled();
+  });
+
   it("pretends queue success for blocked tags without calling add queue api", async () => {
     asmrClientMock.get.mockImplementation(async (url) => {
       if (String(url).includes("/api/search/")) {

@@ -959,7 +959,7 @@ function hasOneSubtitleFlag(work) {
 }
 
 function buildOneEditionLookupCode(edition = {}) {
-  const sourceId = String(edition?.source_id || "")
+  const sourceId = String(edition?.source_id || edition?.workno || "")
     .trim()
     .toUpperCase();
   if (sourceId) {
@@ -1030,6 +1030,7 @@ function isChineseOneEditionLanguage(rawValue) {
   const normalized = normalizeOneEditionLanguage(rawValue).toLowerCase();
 
   return (
+    normalized.startsWith("chi_") ||
     normalized.includes("中文") ||
     normalized.includes("汉化") ||
     normalized.includes("漢化") ||
@@ -1043,6 +1044,7 @@ function isJapaneseOneEditionLanguage(rawValue) {
   const normalized = normalizeOneEditionLanguage(rawValue).toLowerCase();
 
   return (
+    normalized === "jpn" ||
     normalized.includes("日本語") ||
     normalized.includes("日文") ||
     normalized.includes("japanese") ||
@@ -1108,12 +1110,15 @@ async function resolveOneSubtitleTarget(work, workCode) {
     .trim()
     .toUpperCase();
   const currentWorkUrl = buildOneWorkUrl(work, workCode);
+  const editions = [
+    ...(Array.isArray(work?.other_language_editions_in_db)
+      ? work.other_language_editions_in_db
+      : []),
+    ...(Array.isArray(work?.language_editions) ? work.language_editions : []),
+  ];
   const editionCodes = [
     ...new Set(
-      (Array.isArray(work?.other_language_editions_in_db)
-        ? work.other_language_editions_in_db
-        : []
-      )
+      editions
         .map((edition) => buildOneEditionLookupCode(edition))
         .filter(Boolean)
         .filter((editionCode) => editionCode !== currentSourceId),
@@ -1121,13 +1126,12 @@ async function resolveOneSubtitleTarget(work, workCode) {
   ];
 
   if (editionCodes.length) {
-    const editionEntries = (
-      Array.isArray(work?.other_language_editions_in_db)
-        ? work.other_language_editions_in_db
-        : []
-    ).filter((edition) => {
+    const seenEditionCodes = new Set([currentSourceId]);
+    const editionEntries = editions.filter((edition) => {
       const editionCode = buildOneEditionLookupCode(edition);
-      return editionCode && editionCode !== currentSourceId;
+      if (!editionCode || seenEditionCodes.has(editionCode)) return false;
+      seenEditionCodes.add(editionCode);
+      return true;
     });
 
     const results = await Promise.allSettled(
@@ -1155,7 +1159,9 @@ async function resolveOneSubtitleTarget(work, workCode) {
 
         return {
           sourceId,
-          lang: normalizeOneEditionLanguage(edition?.lang),
+          lang: normalizeOneEditionLanguage(
+            edition?.label || edition?.language || edition?.lang,
+          ),
           workUrl:
             result.value.workUrl ||
             buildOneWorkUrl(result.value.work, sourceId),
