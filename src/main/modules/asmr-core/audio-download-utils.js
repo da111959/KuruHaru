@@ -81,11 +81,14 @@ const EXTENSION_PRIORITY = new Map([
   [".wmv", 6],
 ]);
 
-// 同一扩展名下的码率标记
+// 同一扩展名下的码率标记（值越大表示占用空间越高）
 const BITRATE_RULES = [
-  [/(?:320|256)kbps/i, 15],
-  [/(?:192|160)kbps/i, 10],
-  [/(?:128|96)kbps/i, 5],
+  [/(?:320)kbps/i, 320],
+  [/(?:256)kbps/i, 256],
+  [/(?:192)kbps/i, 192],
+  [/(?:160)kbps/i, 160],
+  [/(?:128)kbps/i, 128],
+  [/(?:96)kbps/i, 96],
 ];
 
 // 指纹归一化标记
@@ -97,13 +100,26 @@ const SE_MARKER = new RegExp(
   `(?:${SOUND_KEYWORDS})(?:[有あ]り?|有|[無な]し?|無|off|cut|抜き)|without[_\\s-]?(?:se|sound|bgm)|with[_\\s-]?(?:se|sound|bgm)|\\bnose\\b|no[n]?[_\\s-]*(?:se|sound)|${REVERSAL_KEYWORDS}|射精音[無な]し|吐息[無な]し|心音[無な]し`,
   "gi"
 );
-const DUPLICATE_SUFFIX = /\s*\(\d+\)\s*$/g;
-const LEADING_MARKER_REGEX = /^(?:[(【]|\u005B)[^)】\]]*[)】\]]/;
+// Windows/Telegram duplicate names usually append `(1)` after an already
+// numbered track (`01_title (1).mp3`).  Some catalogs use the same syntax as
+// the actual track number (`voice (1).mp3`), so only strip the suffix when the
+// filename still has an independent leading track ordinal.
+const DUPLICATE_SUFFIX = /\s*\(\d+\)\s*$/;
+const LEADING_MARKER_REGEX = /^(?:[(（【]|\u005B)[^)）】\]]*[)）】\]]/;
 const LEADING_REVERSAL_PREFIX =
   /^(?:反転|左右反転|左右逆|lr反転|lr逆|reverse|配役入替)[_\s-]*/i;
 const LEADING_R_ORDINAL_PREFIX = /^[rR](?=\d{1,3}[\s._-])/i;
 const LEADING_ORDINAL_REGEX = /^0*(\d{1,3})(?=[\s._-])/;
 const TRACK_ORDINAL_REGEX = /^0*(\d{1,3})(?=[\s._-]|$)/;
+const NAMED_TRACK_ORDINAL_REGEX = /^(?:トラック|track|tr|part|パート)\s*0*\d{1,3}(?=[\s._-]|$)/i;
+const FORMAT_PREFIX_AFTER_ORDINAL_REGEX =
+  /^[\s._-]*(?:\(|（|【|\[)\s*(?:mp3|wav|wave|flac|m4a|aac|ogg|wma|音声|音声版|音声のみ)[^)）】\]]*(?:\)|）|】|\])/i;
+const BRANCH_FOLDER_REGEX =
+  /(?:分岐|ルート|route|branch|side|視点|scenario|選択肢|エンド|ending)|^(?:[a-z][\s._:-]|[a-z][-_]\d)/i;
+const CONTENT_BRANCH_FOLDER_REGEX =
+  /^(?:本編|本篇|メイン|main|特典|購入特典|おまけ|bonus|フリートーク|freetalk)$/i;
+const VARIANT_FOLDER_REGEX =
+  /^(?:(?:mp3|wav|wave|flac|m4a|aac|ogg|wma|音声|音声データ|音声ファイル|データ|ファイル|版|format|形式|audio)[\s_\-+()（）]*)+$/i;
 
 function replaceIllegalPathChars(value = "") {
   const replacements = {
@@ -186,17 +202,80 @@ function stripLeadingFormatMarkers(value = "") {
   return remaining;
 }
 
+function stripDownloadDuplicateSuffix(value = "") {
+  const source = String(value || "");
+  const match = source.match(DUPLICATE_SUFFIX);
+  if (!match) {
+    return source;
+  }
+
+  const withoutSuffix = source.slice(0, -match[0].length).trimEnd();
+  const ordinalSource = stripLeadingFormatMarkers(withoutSuffix)
+    .replace(LEADING_REVERSAL_PREFIX, "")
+    .replace(LEADING_R_ORDINAL_PREFIX, "")
+    .trimStart();
+
+  return TRACK_ORDINAL_REGEX.test(ordinalSource) ||
+    NAMED_TRACK_ORDINAL_REGEX.test(ordinalSource)
+    ? withoutSuffix
+    : source;
+}
+
+function isVariantFolderSegment(segment = "") {
+  const normalized = String(segment || "").normalize("NFKC").trim();
+  if (!normalized) return true;
+  if (VARIANT_FOLDER_REGEX.test(normalized)) return true;
+
+  const withoutMarkers = normalized
+    .replace(MEDIA_FORMAT_TOKENS, "")
+    .replace(VERSION_QUALIFIERS, "")
+    .replace(SE_MARKER, "")
+    .replace(/[\s_\-+()（）【】[].]/g, "");
+  return !withoutMarkers;
+}
+
+function buildBranchKey(folder = "") {
+  const segments = String(folder || "")
+    .normalize("NFKC")
+    .split(/[\\/]+/)
+    .map((segment) => segment.trim())
+    .filter(Boolean)
+    .filter((segment) => !isVariantFolderSegment(segment));
+
+  const branchSegments = segments.filter(
+    (segment) =>
+      BRANCH_FOLDER_REGEX.test(segment) ||
+      CONTENT_BRANCH_FOLDER_REGEX.test(segment),
+  );
+
+  return branchSegments.map((segment) => segment.toLowerCase()).join("/");
+}
+
 export function extractTrackOrdinal(fileName = "") {
-  const baseName = String(fileName || "")
+  const normalizedBaseName = String(fileName || "")
     .normalize("NFKC")
     .toLowerCase()
-    .replace(/\.[^.]+$/, "")
-    .replace(DUPLICATE_SUFFIX, "");
+    .replace(/\.[^.]+$/, "");
+  const baseName = stripDownloadDuplicateSuffix(normalizedBaseName);
+  const rawOrdinal = baseName.match(TRACK_ORDINAL_REGEX);
+  if (rawOrdinal) {
+    const rawAfterOrdinal = baseName.slice(rawOrdinal[0].length).trimStart();
+    if (FORMAT_PREFIX_AFTER_ORDINAL_REGEX.test(rawAfterOrdinal)) {
+      return "";
+    }
+  }
   let withoutMarkers = stripLeadingFormatMarkers(baseName);
   withoutMarkers = withoutMarkers
     .replace(LEADING_REVERSAL_PREFIX, "")
     .replace(LEADING_R_ORDINAL_PREFIX, "");
   const matched = withoutMarkers.match(TRACK_ORDINAL_REGEX);
+
+  if (matched) {
+    const afterOrdinal = withoutMarkers.slice(matched[0].length).trimStart();
+    if (FORMAT_PREFIX_AFTER_ORDINAL_REGEX.test(afterOrdinal)) {
+      return "";
+    }
+  }
 
   return matched ? matched[1] : "";
 }
@@ -207,7 +286,7 @@ export function generateFingerprint(fileName = "") {
     .toLowerCase();
   let baseName = normalizedName.replace(/\.[^.]+$/, "");
 
-  baseName = baseName.replace(DUPLICATE_SUFFIX, "");
+  baseName = stripDownloadDuplicateSuffix(baseName);
   baseName = stripLeadingFormatMarkers(baseName);
   baseName = baseName.replace(LEADING_REVERSAL_PREFIX, "");
   baseName = baseName.replace(LEADING_R_ORDINAL_PREFIX, "");
@@ -232,9 +311,9 @@ export function generateFingerprint(fileName = "") {
     return cleanedName;
   }
 
-  const fallbackSource = normalizedName
-    .replace(/\.[^.]+$/, "")
-    .replace(DUPLICATE_SUFFIX, "");
+  const fallbackSource = stripDownloadDuplicateSuffix(
+    normalizedName.replace(/\.[^.]+$/, ""),
+  );
   const fallbackName = fallbackSource.replace(
     /[^\w\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF]/gu,
     "",
@@ -408,7 +487,7 @@ export function buildFolderMaps(filesData = []) {
  * 1. 优先满足环境音与SE完整性 (SEあり > 默认版 > SEなし/声のみ)
  * 2. 优先正常立体声 (正常 > 左右反转)
  * 3. 极小化存储与码率开销 (MP3/AAC/M4A > FLAC > WAV > 视频)
- * 4. 同格式下保留高码率 (320kbps > 128kbps)
+ * 4. 同格式下优先低码率、低存储成本 (128kbps < 320kbps)
  */
 function pickBestCandidate(candidates = []) {
   if (candidates.length === 0) return null;
@@ -432,7 +511,7 @@ function pickBestCandidate(candidates = []) {
   pool = pool.filter((c) => c.channelScore === maxChan);
 
   // 3. 格式与音质选择：首先比对 extensionPriority（数值大者优先，即 MP3 > FLAC > WAV）
-  // 其次比对综合评分 score
+  // 其次比对码率/存储成本，再用综合评分处理未标注码率的候选。
   return pool.reduce((bestItem, candidate) => {
     if (!bestItem) {
       return candidate;
@@ -440,6 +519,16 @@ function pickBestCandidate(candidates = []) {
 
     if (candidate.extensionPriority !== bestItem.extensionPriority) {
       return candidate.extensionPriority > bestItem.extensionPriority
+        ? candidate
+        : bestItem;
+    }
+
+    if (
+      candidate.bitrateCost !== null &&
+      bestItem.bitrateCost !== null &&
+      candidate.bitrateCost !== bestItem.bitrateCost
+    ) {
+      return candidate.bitrateCost < bestItem.bitrateCost
         ? candidate
         : bestItem;
     }
@@ -510,10 +599,10 @@ export function optimizeAndDedupAudioTasks({
       // 特征 3: 格式开销与码率评分
       const fileScore = baseFormatScore(normalizedFileName);
       const seBonus = seScore > 0 ? 20 : (seScore < 0 ? -100 : 0);
-      const bitrateBonus =
+      const bitrateCost =
         BITRATE_RULES.find(([pattern]) =>
           pattern.test(normalizedFileName),
-        )?.[1] ?? 0;
+        )?.[1] ?? null;
       const fileIsFt =
         FT_FOLDER.test(normalizedFileName) &&
         !MAIN_OVERRIDE.test(normalizedFileName);
@@ -521,6 +610,7 @@ export function optimizeAndDedupAudioTasks({
       candidates.push({
         folder,
         fileName,
+        branchKey: buildBranchKey(folder),
         fingerprint: generateFingerprint(fileName),
         ordinal: extractTrackOrdinal(fileName),
         isFt: folderIsFt || fileIsFt,
@@ -528,7 +618,8 @@ export function optimizeAndDedupAudioTasks({
         seScore,
         channelScore,
         extensionPriority: getExtensionPriority(normalizedFileName),
-        score: fileScore * 10 + folderScore + seBonus + bitrateBonus,
+        bitrateCost,
+        score: fileScore * 10 + folderScore + seBonus,
       });
     });
   });
@@ -536,20 +627,30 @@ export function optimizeAndDedupAudioTasks({
   // 视频过滤按轨道兜底：同一指纹已有音频版本才丢弃视频；
   // 只有视频版本的轨道保留视频，避免开启过滤后整条音轨缺失。
   const audioFingerprints = new Set(
-    candidates.filter((item) => !item.isVideo).map((item) => item.fingerprint),
+    candidates
+      .filter((item) => !item.isVideo)
+      .map((item) => `${item.branchKey || "root"}:${item.fingerprint}`),
   );
   const usableCandidates = filterVideoFormats
     ? candidates.filter(
-        (item) => !item.isVideo || !audioFingerprints.has(item.fingerprint),
+        (item) =>
+          !item.isVideo ||
+          !audioFingerprints.has(`${item.branchKey || "root"}:${item.fingerprint}`),
       )
     : candidates;
+
+  // 反転/左右逆是同一轨道的镜像版本，不作为独立下载内容；即使没有
+  // 正常声道版本，也不应把反转版当作兜底，避免下载用户明确不要的版本。
+  const nonInvertedCandidates = usableCandidates.filter(
+    (item) => item.channelScore >= 0,
+  );
 
   // 分组策略：
   // 极短指纹（<=3字符）在 本篇/特典 之间加前缀隔离，防止特典误伤
   const groups = new Map();
-  usableCandidates.forEach((item) => {
+  nonInvertedCandidates.forEach((item) => {
     const ftPrefix = item.fingerprint.length <= 3 && item.isFt ? "ft:" : "";
-    const groupKey = `${ftPrefix}${item.fingerprint}`;
+    const groupKey = `${item.branchKey || "root"}:${ftPrefix}${item.fingerprint}`;
     const group = groups.get(groupKey) || [];
     group.push(item);
     groups.set(groupKey, group);
@@ -557,28 +658,26 @@ export function optimizeAndDedupAudioTasks({
 
   const selectedItems = [];
   groups.forEach((group) => {
-    // 关键：若组内存在正常声道版本 (channelScore >= 0)，反转声道 (channelScore < 0) 绝不应逃逸或参与多轨道分流
-    const hasNormalChannel = group.some((item) => item.channelScore >= 0);
-    const candidatePool = hasNormalChannel
-      ? group.filter((item) => item.channelScore >= 0)
-      : group;
+    const candidatePool = group;
 
-    // 检查组内是否存在多轨道（例如同扩展名下出现多个不同的非空 ordinal）
-    // 仅基于有效候选池 candidatePool 判定
+    // 同一目录内的多个编号是可靠的多轨道信号；跨格式目录仍以标题指纹
+    // 合并，避免把 `1_(wav)` / `2_(mp3)` 这类格式目录编号误当成轨道。
+    const ordinalSet = new Set(
+      candidatePool.map((item) => item.ordinal).filter(Boolean),
+    );
+    const folderSet = new Set(candidatePool.map((item) => item.folder));
     const ordinalsByExt = new Map();
     candidatePool.forEach((item) => {
       const ords = ordinalsByExt.get(item.extensionPriority) || new Set();
-      if (item.ordinal) {
-        ords.add(item.ordinal);
-      }
+      if (item.ordinal) ords.add(item.ordinal);
       ordinalsByExt.set(item.extensionPriority, ords);
     });
+    const hasMultiTracks =
+      ordinalSet.size > 1 &&
+      (folderSet.size === 1 ||
+        Array.from(ordinalsByExt.values()).some((ords) => ords.size > 1));
 
-    const hasMultiTracksInSameExt = Array.from(ordinalsByExt.values()).some(
-      (ords) => ords.size > 1,
-    );
-
-    if (hasMultiTracksInSameExt) {
+    if (hasMultiTracks) {
       // 组内包含多首不同序号的真实曲目，按 ordinal 细分赛道逐轨选优
       const byOrdinal = new Map();
       candidatePool.forEach((item) => {

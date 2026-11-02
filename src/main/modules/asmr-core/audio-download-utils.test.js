@@ -270,6 +270,31 @@ RJ123456
     );
   });
 
+  it("keeps parenthesized track numbers such as voice (1) distinct", () => {
+    const fileNames = Array.from({ length: 6 }, (_value, index) =>
+      `voice (${index + 1}).mp3`,
+    );
+
+    expect(new Set(fileNames.map((fileName) => generateFingerprint(fileName))).size).toBe(
+      fileNames.length,
+    );
+
+    const filesData = fileNames.flatMap((fileName, index) => [
+      ...buildFiles("音声", [fileName]),
+      ...buildFiles("音声", [`voice (${index + 1}).wav`]),
+    ]);
+    const { tasks } = buildDownloadPlanForWork({
+      workCode: "RJ166918",
+      downloadDir: "C:/Downloads",
+      filesData,
+    });
+
+    expect(tasks).toHaveLength(6);
+    expect(tasks.map((task) => task.outPath)).toEqual(fileNames.map(
+      (fileName) => `RJ166918/音声/${fileName}`,
+    ));
+  });
+
   it("keeps mp3 and drops the wav counterpart of the same numbered variant", () => {
     const filesData = [
       ...buildFiles("【10日間限定特典】妊活推進制度/2_柚木つばめ様フリートーク", [
@@ -415,7 +440,7 @@ RJ123456
     expect(tasks.some((task) => task.outPath.includes("1_（wav"))).toBe(false);
   });
 
-  it("keeps the highest bitrate when a track ships multiple mp3 variants", () => {
+  it("keeps the lowest bitrate when a track ships multiple mp3 variants", () => {
     const filesData = buildFiles("本編", [
       "01_あ 128kbps.mp3",
       "01_あ 320kbps.mp3",
@@ -428,7 +453,7 @@ RJ123456
     });
 
     expect(tasks.map((task) => task.outPath)).toEqual([
-      "RJ123456/本編/01_あ 320kbps.mp3",
+      "RJ123456/本編/01_あ 128kbps.mp3",
     ]);
   });
 
@@ -517,6 +542,43 @@ RJ123456
     ]);
   });
 
+  it("keeps distinct route branches while still merging format folders", () => {
+    const filesData = [
+      ...buildFiles("Aルート/mp3", ["01_共通トラック.mp3"]),
+      ...buildFiles("Aルート/wav", ["01_共通トラック.wav"]),
+      ...buildFiles("Bルート/mp3", ["01_共通トラック.mp3"]),
+      ...buildFiles("Bルート/wav", ["01_共通トラック.wav"]),
+    ];
+
+    const { tasks } = buildDownloadPlanForWork({
+      workCode: "RJ123456",
+      downloadDir: "C:/Downloads",
+      filesData,
+    });
+
+    expect(tasks.map((task) => task.outPath)).toEqual([
+      "RJ123456/Aルート/mp3/01_共通トラック.mp3",
+      "RJ123456/Bルート/mp3/01_共通トラック.mp3",
+    ]);
+  });
+
+  it("uses the track ordinal across mixed mp3 and wav candidates", () => {
+    const filesData = [
+      ...buildFiles("本編", ["01_同名.mp3", "02_同名.wav"]),
+    ];
+
+    const { tasks } = buildDownloadPlanForWork({
+      workCode: "RJ123456",
+      downloadDir: "C:/Downloads",
+      filesData,
+    });
+
+    expect(tasks.map((task) => task.outPath)).toEqual([
+      "RJ123456/本編/01_同名.mp3",
+      "RJ123456/本編/02_同名.wav",
+    ]);
+  });
+
   it("handles folder names that are not in any whitelist", () => {
     const filesData = [
       ...buildFiles("", ["01_あ.wav", "02_い.wav"]),
@@ -567,7 +629,7 @@ RJ123456
     ]);
   });
 
-  it("retains channel-inverted version when it is the only version available", () => {
+  it("drops channel-inverted version even when it is the only version available", () => {
     const filesData = buildFiles("左右反転", ["01_プロローグ 左右反転.mp3"]);
 
     const { tasks } = buildDownloadPlanForWork({
@@ -576,9 +638,30 @@ RJ123456
       filesData,
     });
 
+    expect(tasks).toEqual([]);
+  });
+
+  it("drops a full set of leading 反転 tracks", () => {
+    const filesData = [
+      ...buildFiles("本編", [
+        "01_勃起したら予算可決！？.mp3",
+        "02_お射精我慢で予算可決ゲーム.mp3",
+        "反転01_勃起したら予算可決！？.mp3",
+        "反転02_お射精我慢で予算可決ゲーム.mp3",
+      ]),
+    ];
+
+    const { tasks } = buildDownloadPlanForWork({
+      workCode: "RJ166918",
+      downloadDir: "C:/Downloads",
+      filesData,
+    });
+
     expect(tasks.map((task) => task.outPath)).toEqual([
-      "RJ123456/左右反転/01_プロローグ 左右反転.mp3",
+      "RJ166918/本編/01_勃起したら予算可決！？.mp3",
+      "RJ166918/本編/02_お射精我慢で予算可決ゲーム.mp3",
     ]);
+    expect(tasks.some((task) => task.outPath.includes("反転"))).toBe(false);
   });
 
   it("preserves bonus track when it only exists in WAV while main tracks are MP3", () => {
