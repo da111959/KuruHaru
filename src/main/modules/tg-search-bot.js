@@ -2963,6 +2963,7 @@ async function handleHelpCommand(msg) {
 const TRANSLATION_STATUS_LABELS = {
   disabled: "未启用",
   "waiting-window": "等待运行时段",
+  "history-sync": "同步最近历史",
   scan: "扫描中",
   queue: "读取队列",
   download: "下载中",

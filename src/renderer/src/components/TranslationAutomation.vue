@@ -450,6 +450,7 @@ const aria2RestartCooldownMinutes = computed(() =>
 const stageLabel = (step) =>
   ({
     idle: "待机",
+    "history-sync": "同步最近历史",
     scan: "扫描最近作品",
     enqueue: "加入待翻译队列",
     queue: "读取待翻译队列",

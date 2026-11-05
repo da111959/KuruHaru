@@ -12,6 +12,7 @@ import { extractWorksArrayExtended } from "./asmr-core/search-utils.js";
 import { collectPackFilesInDirectory } from "./whisper-pack-utils.js";
 import { requireConnectedTelegramClient } from "../utils/telegram-login.js";
 import { normalizePeerEntityInput } from "./tg-common-core/peer-entity.js";
+import { scanAndSaveRecentActivity } from "./tg-recent-activity.js";
 import { CONFIG_DEFAULTS } from "../../shared/config-contract.mjs";
 import { getAsmrToken } from "../domains/asmr/credential-store.js";
 import {
@@ -628,6 +629,33 @@ const collectHistoricalTranslatedCodes = async () => {
     externalTranslatedCodes,
     localSubtitleCodes,
   };
+};
+
+const syncRecentHistoryBeforeQueue = async () => {
+  const tgConfig = getConfig()?.tg || {};
+  const scanChatId = String(tgConfig.discussion || tgConfig.channel || "").trim();
+
+  // Keep queue automation usable for installations that intentionally do not
+  // use Telegram history scanning. When scanning is configured, wait for the
+  // shared recent-activity file to be refreshed before reading historical
+  // translated codes so parallel queues make the same decision.
+  if (!scanChatId || !tgConfig.apiId || !tgConfig.apiHash || !tgConfig.session) {
+    logger.debug(
+      "[automation] 最近历史同步跳过：未配置 Telegram 频道或已登录会话",
+    );
+    return { success: true, skipped: true, reason: "telegram_history_unconfigured" };
+  }
+
+  setRuntimeStatus("history-sync", "正在同步 Telegram 最近历史");
+  const result = await scanAndSaveRecentActivity({ chatIdStr: scanChatId });
+  if (!result?.success) {
+    throw new Error(`最近历史同步失败：${result?.error || "未知错误"}`);
+  }
+
+  logger.info(
+    `[automation] 最近历史同步完成 files=${result?.data?.files?.length || 0}`,
+  );
+  return result;
 };
 
 const fetchRecentWorks = async (config) => {
@@ -2541,6 +2569,7 @@ const runOnce = async ({ force = false } = {}) => {
     failed: 0,
   };
   try {
+    await syncRecentHistoryBeforeQueue();
     const {
       historicalTranslatedCodes,
       externalTranslatedCodes,

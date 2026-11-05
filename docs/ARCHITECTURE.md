@@ -69,6 +69,8 @@ Vue 页面 / composables / stores
 | 重复审计 | `paths.dataDir/rj-duplicate-audit.json` | 快照、预览和逐项结果 |
 | TG 信息缓存 | 应用数据目录 | 来源、新鲜度和刷新失败 |
 
+自动翻译队列每轮开始处理前，会先等待 Telegram 最近活动历史扫描完成，再读取本地历史索引。已配置 Telegram 频道和登录会话但同步失败时，本轮会停止，避免多个队列实例基于过期历史重复收获；未配置这些条件时跳过同步并沿用本地历史。
+
 ## 配置边界与精简策略
 
 - `src/shared/config-contract.mjs` 是配置 section、默认值和版本的唯一来源。
