@@ -9,6 +9,7 @@ import { setupRjDuplicatesIPC } from "../modules/tg-rj-duplicates";
 import { setupTgInfoErrorRecoverIPC } from "../modules/tg-info-error-recover";
 import { setupAsmrAudioDownloaderIPC } from "../modules/asmr-audio-downloader";
 import { getConfig, setupConfigIPC } from "../modules/config";
+import { registerAppLogIPC } from "../system/log-service";
 
 /**
  * Owns feature-module wiring and the background-task shutdown order.
@@ -34,6 +35,7 @@ export function createModuleAssembly({ logger }) {
     setupAsmrAudioDownloaderIPC();
     domains.translationAutomation.ipc.register();
     setupConfigIPC();
+    registerAppLogIPC();
     registered = true;
   }
 

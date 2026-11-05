@@ -98,6 +98,7 @@ const INVOKE_MAP = {
   readImageAsBase64: { channel: "read-image-as-base64", args: ARG_DIRECT },
   captureMainWindow: { channel: "window-capture", args: ARG_DIRECT },
   getDefaultAvatar: "get-default-avatar",
+  readAppLogs: { channel: "system:read-app-logs", args: ARG_DIRECT },
 
   // 保存自定义路径配置
   saveCustomPaths: { channel: "save-custom-paths", args: ARG_DIRECT },
@@ -302,6 +303,7 @@ const api = {
     readImageAsBase64: invokeMethods.readImageAsBase64,
     captureMainWindow: invokeMethods.captureMainWindow,
     getDefaultAvatar: invokeMethods.getDefaultAvatar,
+    readAppLogs: invokeMethods.readAppLogs,
     getWindowState: windowControls.getState,
     onWindowStateChanged: listenerMethods.onWindowStateChanged,
     windowControls,

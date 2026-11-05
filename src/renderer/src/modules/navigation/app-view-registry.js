@@ -18,6 +18,7 @@ const appViewRegistry = createViewRegistry({
   TgInfoErrorRecover: defineAsyncComponent(() => import("../../components/TgInfoErrorRecover.vue")),
   RjDuplicateDetector: defineAsyncComponent(() => import("../../components/RjDuplicateDetector.vue")),
   Tools: defineAsyncComponent(() => import("../../components/Tools.vue")),
+  Logs: defineAsyncComponent(() => import("../../components/Logs.vue")),
   Settings: defineAsyncComponent(() => import("../../components/Settings.vue")),
   ChineseList: defineAsyncComponent(() => import("../../components/ChineseList.vue")),
   AdvancedSearch: defineAsyncComponent(() => import("../../components/AdvancedSearch.vue")),

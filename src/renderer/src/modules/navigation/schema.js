@@ -40,6 +40,7 @@ export const menuGroups = [
       { key: "rj-filter", label: "RJ 过滤", icon: "rj-filter" },
       { key: "chinese-list", label: "中文列表", icon: "chinese-list" },
       { key: "tools", label: "工具箱", icon: "tools" },
+      { key: "logs", label: "运行日志", icon: "logs" },
     ],
   },
   {

@@ -35,6 +35,7 @@ const NAV_ICON_REGISTRY = Object.freeze({
   "rj-filter": NumberSymbol24Regular,
   "chinese-list": TextBulletListSquare24Regular,
   tools: Toolbox24Regular,
+  logs: TextBulletListSquare24Regular,
   telegram: Chat24Regular,
   "tg-search-bot": Bot24Regular,
   "tg-info-cache": Folder24Regular,
