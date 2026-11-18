@@ -111,7 +111,11 @@ export const useCloudCleaner = ({ message, dialog } = {}) => {
         } else {
           notify("info", "无重合数据");
         }
+      } else {
+        notify("error", res?.error || "读取最近上传记录失败");
       }
+    } catch (error) {
+      notify("error", `读取最近上传记录失败：${error.message}`);
     } finally {
       isBusy.value = false;
     }
@@ -261,7 +265,14 @@ export const useCloudCleaner = ({ message, dialog } = {}) => {
     if (isBusy.value) return;
     isBusy.value = true;
     try {
-      await asmrFetchCloudWorks();
+      const result = await asmrFetchCloudWorks();
+      if (result?.success) {
+        notify("success", `云端列表已更新：${result.data?.length ?? 0} 条`);
+      } else {
+        notify("error", result?.error || "刷新云端列表失败");
+      }
+    } catch (error) {
+      notify("error", `刷新云端列表失败：${error.message}`);
     } finally {
       isBusy.value = false;
     }
@@ -289,6 +300,8 @@ export const useCloudCleaner = ({ message, dialog } = {}) => {
       } else {
         notify("error", res.error || "删除失败，可根据审计结果重试失败项");
       }
+    } catch (error) {
+      notify("error", `云端删除失败：${error.message}`);
     } finally {
       isBusy.value = false;
     }
@@ -303,8 +316,16 @@ export const useCloudCleaner = ({ message, dialog } = {}) => {
     });
 
     // 读取缓存
-    const res = await asmrGetCachedCloudWorks();
-    if (res.success) cloudWorks.value = res.data;
+    try {
+      const res = await asmrGetCachedCloudWorks();
+      if (res?.success) {
+        cloudWorks.value = res.data;
+      } else {
+        notify("error", res?.error || "读取云端缓存失败");
+      }
+    } catch (error) {
+      notify("error", `读取云端缓存失败：${error.message}`);
+    }
   });
 
   onUnmounted(() => {

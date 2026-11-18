@@ -76,6 +76,7 @@ export const useChineseListWorkflow = ({ message, dialog } = {}) => {
 
   const loadTxtFiles = async (files) => {
     let totalImported = 0;
+    let failedFiles = 0;
 
     for (const file of files) {
       if (!file.name.endsWith(".txt")) continue;
@@ -92,19 +93,32 @@ export const useChineseListWorkflow = ({ message, dialog } = {}) => {
 
         totalImported += upperCodes.length;
       } catch (e) {
+        failedFiles += 1;
         console.error(`读取 ${file.name} 失败:`, e);
       }
     }
 
     if (txtSet.value.size > 0) {
       const allRjCodes = [...txtSet.value];
-      // TXT 导入后立即落盘，后续 TG/API 扫描都以此作为基准增量。
-      await asmrWriteChineseList(allRjCodes);
+      try {
+        // TXT 导入后立即落盘，后续 TG/API 扫描都以此作为基准增量。
+        const result = await asmrWriteChineseList(allRjCodes);
+        if (!result?.success) {
+          throw new Error(result?.error || "写入汉化列表失败");
+        }
+      } catch (error) {
+        console.error("写入汉化列表失败:", error);
+        notify("error", `导入失败：${error.message}`);
+        return;
+      }
     }
 
-    console.log(
-      `已导入 ${totalImported} 个RJ号（合并后共 ${txtSet.value.size} 个）`,
-    );
+    const summary = `TXT 导入完成：读取 ${totalImported} 个，去重后共 ${txtSet.value.size} 个`;
+    if (failedFiles > 0) {
+      notify("warning", `${summary}；${failedFiles} 个文件读取失败`);
+    } else {
+      notify("success", summary);
+    }
   };
 
   const handleTxtDrop = async (e) => {
@@ -151,6 +165,10 @@ export const useChineseListWorkflow = ({ message, dialog } = {}) => {
         const newCodes = rjCodes.filter((code) => !existing.has(code));
         tgSet.value = new Set([...tgSet.value, ...newCodes]);
         tgRJCount.value = tgSet.value.size;
+        notify(
+          "success",
+          `TG 数据读取完成：新增 ${newCodes.length} 个，共 ${tgRJCount.value} 个`,
+        );
       } else {
         notify("error", "读取TG数据失败或无数据");
       }
@@ -223,6 +241,7 @@ export const useChineseListWorkflow = ({ message, dialog } = {}) => {
     link.download = `RJ列表_${new Date().toISOString().slice(0, 10)}.txt`;
     link.click();
     URL.revokeObjectURL(url);
+    notify("success", `已导出 ${unique.length} 个 RJ/VJ/BJ 编号`);
   };
 
   const clearAll = async () => {
@@ -259,6 +278,7 @@ export const useChineseListWorkflow = ({ message, dialog } = {}) => {
       }
     } catch (e) {
       console.error("选择文件夹失败:", e);
+      notify("error", `选择文件夹失败：${e.message}`);
     }
   };
 
@@ -267,6 +287,7 @@ export const useChineseListWorkflow = ({ message, dialog } = {}) => {
       await asmrSetChineseListPath(txtFilePath.value);
     } catch (e) {
       console.error("保存路径设置失败:", e);
+      notify("error", `保存路径设置失败：${e.message}`);
     }
   };
 

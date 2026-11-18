@@ -30,16 +30,18 @@ export const useLocalCleaner = ({ message, dialog } = {}) => {
   };
 
   const scanFolder = async () => {
-    const res = await openDirectory();
-    if (res && res.filePath) {
+    try {
+      const res = await openDirectory();
+      if (!res?.filePath) return;
+
       isBusy.value = true;
-      try {
-        const scanRes = await scanLocalArchives(res.filePath);
-        localItems.value = scanRes || [];
-        selectedPaths.value = [];
-      } catch (e) {
-        notify("error", "扫描出错: " + e.message);
-      }
+      const scanRes = await scanLocalArchives(res.filePath);
+      localItems.value = scanRes || [];
+      selectedPaths.value = [];
+      notify("success", `扫描完成：找到 ${localItems.value.length} 个文件`);
+    } catch (error) {
+      notify("error", `扫描出错：${error.message}`);
+    } finally {
       isBusy.value = false;
     }
   };
@@ -127,6 +129,8 @@ export const useLocalCleaner = ({ message, dialog } = {}) => {
         (i) => !selectedPaths.value.includes(i.path),
       );
       selectedPaths.value = [];
+    } catch (error) {
+      notify("error", `云端删除失败：${error.message}`);
     } finally {
       isBusy.value = false;
     }
@@ -146,7 +150,11 @@ export const useLocalCleaner = ({ message, dialog } = {}) => {
       if (result.success) {
         notify("success", `云端删除 ${result.deletedCount} 个作品`);
         txtRJCodes.value = [];
+      } else {
+        notify("error", result?.error || "云端删除失败");
       }
+    } catch (error) {
+      notify("error", `云端删除失败：${error.message}`);
     } finally {
       isBusy.value = false;
     }

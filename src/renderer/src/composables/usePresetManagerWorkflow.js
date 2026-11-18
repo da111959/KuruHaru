@@ -1,6 +1,6 @@
 import { ref, watch, onMounted } from "vue";
 
-export const usePresetManagerWorkflow = ({ props, emit, dialog }) => {
+export const usePresetManagerWorkflow = ({ props, emit, dialog, message }) => {
   const presetName = ref("");
   const presets = ref([]);
   const activePresets = ref([]);
@@ -73,8 +73,11 @@ export const usePresetManagerWorkflow = ({ props, emit, dialog }) => {
     try {
       const data = JSON.stringify(presets.value);
       localStorage.setItem("searchPresets", data);
+      return true;
     } catch (e) {
       console.error("保存失败", e);
+      message?.error(`保存预设失败：${e.message}`);
+      return false;
     }
   };
 
@@ -83,8 +86,9 @@ export const usePresetManagerWorkflow = ({ props, emit, dialog }) => {
     presets.value.splice(index, 1);
     const idx = activePresets.value.indexOf(name);
     if (idx >= 0) activePresets.value.splice(idx, 1);
-    saveToStorage();
+    const saved = saveToStorage();
     updateParent();
+    if (saved) message?.success(`已删除预设“${name}”`);
   };
 
   const normalizeCurrentParams = () => {
@@ -156,9 +160,10 @@ export const usePresetManagerWorkflow = ({ props, emit, dialog }) => {
       presets.value.push(newPreset);
     }
 
-    saveToStorage();
+    const saved = saveToStorage();
     emit("save", { presets: presets.value });
     presetName.value = "";
+    if (saved) message?.success(`预设“${newPreset.name}”已保存`);
   };
 
   const updatePreset = (preset) => {
@@ -168,8 +173,9 @@ export const usePresetManagerWorkflow = ({ props, emit, dialog }) => {
         name: preset.name,
         params: normalizeCurrentParams(),
       };
-      saveToStorage();
+      const saved = saveToStorage();
       emit("save", { presets: presets.value });
+      if (saved) message?.success(`预设“${preset.name}”已更新`);
     }
   };
 

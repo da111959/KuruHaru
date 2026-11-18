@@ -72,10 +72,11 @@
   </div>
 </template>
 <script setup>
-import { createDialog } from "../utils/ui-feedback";
+import { createDialog, createMessage } from "../utils/ui-feedback";
 import { usePresetManagerWorkflow } from "../composables/usePresetManagerWorkflow";
 
 const dialog = createDialog();
+const message = createMessage();
 
 const props = defineProps({
   presetsData: { type: Array, default: () => [] },
@@ -103,7 +104,7 @@ const {
   deletePreset,
   savePreset,
   updatePreset,
-} = usePresetManagerWorkflow({ props, emit, dialog });
+} = usePresetManagerWorkflow({ props, emit, dialog, message });
 </script>
 <style scoped>
 .preset-manager {

@@ -313,11 +313,14 @@
                   </main>
                 </section>
               </div>
+
+              <FeedbackToastStack :below-title-bar="showCustomTitleBar" />
             </div>
 </template>
 
 <script setup>
 import AppTitleBar from "./components/AppTitleBar.vue";
+import FeedbackToastStack from "./components/FeedbackToastStack.vue";
 import { useAppShellController } from "./composables/useAppShellController";
 import * as navIconModule from "./modules/navigation/icons";
 
